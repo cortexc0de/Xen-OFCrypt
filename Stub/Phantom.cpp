@@ -14,6 +14,10 @@
 
 namespace Phantom
 {
+    // Pre-computed CRC32C hash constants
+    static constexpr DWORD HASH_FreeLibrary          = 0x06A6A79F;
+    static constexpr DWORD HASH_WaitForSingleObject  = 0x6D073E2B;
+
     // ═══ Найти .text секцию в PE ═══
     static bool FindTextSection(HMODULE hModule, void** textBase, size_t* textSize)
     {
@@ -122,8 +126,8 @@ namespace Phantom
         if (!hK32) return;
 
         auto pLL = (HMODULE(WINAPI*)(LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
-        auto pFL = (BOOL(WINAPI*)(HMODULE))Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("FreeLibrary"));
-        auto pWFSO = (DWORD(WINAPI*)(HANDLE,DWORD))Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("WaitForSingleObject"));
+        auto pFL = (BOOL(WINAPI*)(HMODULE))Api::GetProcByHashCrc(hK32, HASH_FreeLibrary);
+        auto pWFSO = (DWORD(WINAPI*)(HANDLE,DWORD))Api::GetProcByHashCrc(hK32, HASH_WaitForSingleObject);
         if (!pLL || !pFL) return;
 
         const char* dlls[] = { dll1, dll2, dll3, dll4, dll5 };

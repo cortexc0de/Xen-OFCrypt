@@ -15,6 +15,9 @@
 
 namespace Syscall
 {
+    // Pre-computed CRC32C hash constants
+    static constexpr DWORD HASH_GetProcAddress = 0x43AAC47D;
+
     // ═══ MASM global tables (declared in IndirectSyscall.asm) ═══
     extern "C" ULONGLONG SyscallTable[ENTRY_COUNT];
     extern "C" ULONGLONG GadgetTable[ENTRY_COUNT];
@@ -144,7 +147,7 @@ namespace Syscall
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (!hK32) return false;
 
-        constexpr DWORD hashGPA = Crc32C::ConstHash("GetProcAddress");
+        constexpr DWORD hashGPA = HASH_GetProcAddress;
         FARPROC pGPA = Api::GetProcByHashCrc(hK32, hashGPA);
         if (!pGPA) return false;
 

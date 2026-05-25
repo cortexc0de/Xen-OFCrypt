@@ -14,6 +14,19 @@
 
 namespace Crypto
 {
+    static constexpr DWORD HASH_BCryptOpenAlgorithmProvider = 0x5EB86EAB;
+    static constexpr DWORD HASH_BCryptSetProperty = 0x0B4C6DC6;
+    static constexpr DWORD HASH_BCryptGenerateSymmetricKey = 0xE2AB3C90;
+    static constexpr DWORD HASH_BCryptEncrypt = 0x3EDBC7CB;
+    static constexpr DWORD HASH_BCryptDecrypt = 0x026238C6;
+    static constexpr DWORD HASH_BCryptDestroyKey = 0x768E67C3;
+    static constexpr DWORD HASH_BCryptCloseAlgorithmProvider = 0xE135B81B;
+    static constexpr DWORD HASH_BCryptCreateHash = 0xC448E8C7;
+    static constexpr DWORD HASH_BCryptHashData = 0xA3D29489;
+    static constexpr DWORD HASH_BCryptFinishHash = 0xB48CD344;
+    static constexpr DWORD HASH_BCryptDestroyHash = 0x2F641DDE;
+    static constexpr DWORD HASH_BCryptGetProperty = 0x00C3E249;
+
     bool Decrypt(unsigned char* data, size_t size, const unsigned char* key, size_t keySize, Algorithm algo)
     {
         switch (algo)
@@ -88,17 +101,17 @@ namespace Crypto
 
             // Resolve BCrypt functions via CRC32C hash
             auto pOpenAlg    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE*,LPCWSTR,LPCWSTR,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptOpenAlgorithmProvider"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptOpenAlgorithmProvider);
             auto pSetProp    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,LPCWSTR,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptSetProperty"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptSetProperty);
             auto pGenKey     = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,BCRYPT_KEY_HANDLE*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptGenerateSymmetricKey"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptGenerateSymmetricKey);
             auto pDecrypt    = (NTSTATUS(WINAPI*)(BCRYPT_KEY_HANDLE,PUCHAR,ULONG,VOID*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG*,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptDecrypt"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptDecrypt);
             auto pDestroyKey = (NTSTATUS(WINAPI*)(BCRYPT_KEY_HANDLE))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptDestroyKey"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptDestroyKey);
             auto pCloseAlg   = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptCloseAlgorithmProvider"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptCloseAlgorithmProvider);
 
             if (!pOpenAlg || !pSetProp || !pGenKey || !pDecrypt || !pDestroyKey || !pCloseAlg)
                 return false;
@@ -160,17 +173,17 @@ namespace Crypto
             }
 
             auto pOpenAlg     = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE*,LPCWSTR,LPCWSTR,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptOpenAlgorithmProvider"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptOpenAlgorithmProvider);
             auto pCreateHash  = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,BCRYPT_HASH_HANDLE*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptCreateHash"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptCreateHash);
             auto pHashData    = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptHashData"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptHashData);
             auto pFinishHash  = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptFinishHash"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptFinishHash);
             auto pDestroyHash = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptDestroyHash"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptDestroyHash);
             auto pCloseAlg    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,ULONG))
-                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptCloseAlgorithmProvider"));
+                Api::GetProcByHashCrc(hBC, HASH_BCryptCloseAlgorithmProvider);
 
             if (!pOpenAlg || !pCreateHash || !pHashData || !pFinishHash || !pDestroyHash || !pCloseAlg)
             {

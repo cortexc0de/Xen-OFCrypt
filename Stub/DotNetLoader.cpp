@@ -18,14 +18,14 @@
 namespace DotNetLoader
 {
     // ═══ Предвычисленные CRC32C-хеши ═══
-    static constexpr DWORD HASH_GetTempPathW        = Crc32C::ConstHash("GetTempPathW");
-    static constexpr DWORD HASH_CreateFileW          = Crc32C::ConstHash("CreateFileW");
-    static constexpr DWORD HASH_WriteFile             = Crc32C::ConstHash("WriteFile");
-    static constexpr DWORD HASH_CloseHandle          = Crc32C::ConstHash("CloseHandle");
-    static constexpr DWORD HASH_GetTickCount         = Crc32C::ConstHash("GetTickCount");
-    static constexpr DWORD HASH_CLRCreateInstance    = Crc32C::ConstHash("CLRCreateInstance");
-    static constexpr DWORD HASH_CoInitialize         = Crc32C::ConstHash("CoInitialize");
-    static constexpr DWORD HASH_CoUninitialize       = Crc32C::ConstHash("CoUninitialize");
+    static constexpr DWORD HASH_GetTempPathW        = 0x9E55CDC6;
+    static constexpr DWORD HASH_CreateFileW          = 0x97471A6C;
+    static constexpr DWORD HASH_WriteFile             = 0x66C3DAD3;
+    static constexpr DWORD HASH_CloseHandle          = 0x2E67D349;
+    static constexpr DWORD HASH_GetTickCount         = 0x587DD74D;
+    static constexpr DWORD HASH_CLRCreateInstance    = 0xC85A4732;
+    static constexpr DWORD HASH_CoInitialize         = 0xFB6B34E2;
+    static constexpr DWORD HASH_CoUninitialize       = 0x3BEC84F2;
 
     // ═══ Минимальные COM-интерфейсы для CLR Hosting ═══
     // Только методы, необходимые для работы. Остальные пропущены.

