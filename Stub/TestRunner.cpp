@@ -105,14 +105,55 @@ static void TestPureCrypto()
     TEST("HmacSha256 produces non-zero output", hmacNonZero);
 }
 
-// ═══ Test 3: Syscall engine — SSN resolution + indirect syscall ═══
+// ═══ Test 3: KnownDlls unhooking — strict byte-level verification ═══
+static void TestKnownDllsStrict()
+{
+    printf("\n=== KnownDlls (strict) ===\n");
+
+    // 1. Snapshot first 16 bytes of NtClose prologue (clean state)
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    BYTE* pNtClose = (BYTE*)GetProcAddress(hNtdll, "NtClose");
+    BYTE originalBytes[16] = {};
+    memcpy(originalBytes, pNtClose, 16);
+
+    // 2. Simulate EDR hook: patch first 16 bytes with 0xCC (int3) sled
+    DWORD oldProtect;
+    VirtualProtect(pNtClose, 16, PAGE_EXECUTE_READWRITE, &oldProtect);
+    BYTE fakeHook[16];
+    memset(fakeHook, 0xCC, 16);
+    memcpy(pNtClose, fakeHook, 16);
+    VirtualProtect(pNtClose, 16, oldProtect, &oldProtect);
+
+    // Verify hook is in place
+    bool hookApplied = (memcmp(pNtClose, fakeHook, 16) == 0);
+    TEST("Simulated EDR hook applied to NtClose", hookApplied);
+
+    // 3. Unhook — should restore clean .text from KnownDlls
+    bool unhookOk = KnownDlls::UnhookNtdll();
+    TEST("KnownDlls::UnhookNtdll()", unhookOk);
+
+    // 4. Verify bytes restored — compare with original snapshot
+    if (unhookOk) {
+        bool bytesRestored = (memcmp(pNtClose, originalBytes, 16) == 0);
+        if (!bytesRestored) {
+            printf("    ACTUAL:   ");
+            for (int i = 0; i < 16; i++) printf("%02X", pNtClose[i]);
+            printf("\n    EXPECTED: ");
+            for (int i = 0; i < 16; i++) printf("%02X", originalBytes[i]);
+            printf("\n");
+        }
+        TEST("NtClose prologue restored to original bytes", bytesRestored);
+    } else {
+        TEST("NtClose prologue restored to original bytes", false);
+    }
+}
+
+// ═══ Test 4: Syscall engine — SSN resolution + indirect syscall ═══
 static void TestSyscallEngine()
 {
     printf("\n=== Indirect Syscall Engine ===\n");
 
-    // KnownDlls unhook first (required for Syscall::Init)
-    bool unhookOk = KnownDlls::UnhookNtdll();
-    TEST("KnownDlls::UnhookNtdll()", unhookOk);
+    // KnownDlls already unhooked in TestKnownDllsStrict()
 
     // GadgetPool scan (required for Syscall::Init)
     int gadgetCount = GadgetPool::Scan();
@@ -199,6 +240,7 @@ int main()
 
     TestApiResolver();
     TestPureCrypto();
+    TestKnownDllsStrict();
     TestSyscallEngine();
     TestPatchlessBypass();
 
