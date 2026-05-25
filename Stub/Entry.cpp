@@ -108,7 +108,7 @@ __declspec(allocate(".xthrx")) StubConfig GlobalConfig   = {
     false,  // EkkoSleep
     false,  // PPIDSpoof
     false,  // EntropyNorm
-    false,  // IndirectSyscalls
+    true,   // IndirectSyscalls
     false,  // ThreadPool
     false,  // GuardPage
     false,  // HWIDBind
@@ -117,8 +117,8 @@ __declspec(allocate(".xthrx")) StubConfig GlobalConfig   = {
     false,  // MotwStrip
     false,  // AntiEmulation
     false,  // StagedLoad
-    false,  // KnownDllsUnhook
-    false,  // StackSpoof
+    true,   // KnownDllsUnhook
+    true,   // StackSpoof
     false,  // AntiMemScan
     false,  // RemoteInjection
     false,  // DotNetLoading
