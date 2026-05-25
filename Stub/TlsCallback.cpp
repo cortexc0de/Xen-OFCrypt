@@ -50,25 +50,59 @@ static void NTAPI TlsCallbackFunc(PVOID DllHandle, DWORD Reason, PVOID Reserved)
     // NtGlobalFlag at PEB+0x68 (x86) or PEB+0xBC (x64)
     // If debugger attached, flags contain FLG_HEAP_ENABLE_TAIL_CHECK (0x10),
     // FLG_HEAP_ENABLE_FREE_CHECK (0x20), FLG_HEAP_VALIDATE_PARAMETERS (0x40)
-    typedef LONG(WINAPI* pNtQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-
-    // Stack-built function name to avoid strings
-    char ntqip[] = { 'N','t','Q','u','e','r','y','I','n','f','o','r','m','a','t','i','o','n','P','r','o','c','e','s','s',0 };
-    char ntdll[] = { 'n','t','d','l','l','.','d','l','l',0 };
-
-    HMODULE hNtdll = GetModuleHandleA(ntdll);
-    if (hNtdll)
+    // Resolve NtQueryInformationProcess через inline PEB walk (без IAT)
     {
-        pNtQueryInformationProcess NtQIP =
-            (pNtQueryInformationProcess)GetProcAddress(hNtdll, ntqip);
+        BYTE* ntdllBase = (BYTE*)pebAddr;  // reuse pebAddr from above
+        // PEB → Ldr → InMemoryOrderModuleList — найти ntdll
+        unsigned __int64 ldrAddr = *(unsigned __int64*)(pebAddr + 0x18);
+        unsigned __int64 headAddr = *(unsigned __int64*)(ldrAddr + 0x20);
+        unsigned __int64 currAddr = *(unsigned __int64*)(headAddr);
+        // Второй entry в InMemoryOrderModuleList = ntdll.dll (после .exe)
+        // Первый = сам .exe, второй = ntdll.dll
+        currAddr = *(unsigned __int64*)(currAddr);
+        // DllBase: InMemoryOrderLinks offset +0x10, DllBase offset +0x30 → curr - 0x10 + 0x20
+        ntdllBase = *(BYTE**)(currAddr + 0x20 - 0x10);
 
-        if (NtQIP)
+        if (ntdllBase)
         {
-            // ProcessDebugPort = 7
-            ULONG_PTR debugPort = 0;
-            LONG status = NtQIP(GetCurrentProcess(), 7, &debugPort, sizeof(debugPort), NULL);
-            if (status == 0 && debugPort != 0)
-                return; // Debugger detected — silent exit from callback
+            // Inline export table walk — DJB2 hash match
+            DWORD targetHash = 0xd034fc62; // DJB2("NtQueryInformationProcess")
+            PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)ntdllBase;
+            if (dos->e_magic == IMAGE_DOS_SIGNATURE)
+            {
+                PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(ntdllBase + dos->e_lfanew);
+                if (nt->Signature == IMAGE_NT_SIGNATURE)
+                {
+                    DWORD expRVA = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+                    if (expRVA)
+                    {
+                        PIMAGE_EXPORT_DIRECTORY expDir = (PIMAGE_EXPORT_DIRECTORY)(ntdllBase + expRVA);
+                        DWORD* names    = (DWORD*)(ntdllBase + expDir->AddressOfNames);
+                        WORD*  ordinals = (WORD*)(ntdllBase + expDir->AddressOfNameOrdinals);
+                        DWORD* funcs    = (DWORD*)(ntdllBase + expDir->AddressOfFunctions);
+
+                        for (DWORD i = 0; i < expDir->NumberOfNames; i++)
+                        {
+                            const char* fn = (const char*)(ntdllBase + names[i]);
+                            DWORD h = 5381;
+                            while (*fn) h = ((h << 5) + h) + (unsigned char)(*fn++);
+                            if (h == targetHash)
+                            {
+                                typedef LONG(NTAPI* pNtQIP)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+                                pNtQIP NtQIP = (pNtQIP)(ntdllBase + funcs[ordinals[i]]);
+                                if (NtQIP)
+                                {
+                                    ULONG_PTR debugPort = 0;
+                                    LONG status = NtQIP(GetCurrentProcess(), 7, &debugPort, sizeof(debugPort), NULL);
+                                    if (status == 0 && debugPort != 0)
+                                        return; // Debugger detected — silent exit
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
