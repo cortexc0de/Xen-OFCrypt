@@ -49,4 +49,12 @@ namespace PatchlessBypass
 
     // Query state
     bool IsActive();
+
+    // CLR-level AMSI bypass — DR3 HWBP on clr!AmsiScan
+    // Must be called AFTER Enable() (needs ret gadget + VEH dispatcher)
+    // and AFTER CLR is initialized (clr.dll must be loaded)
+    bool EnableClrAmsiBypass();
+
+    // Disable CLR AMSI bypass — clear DR3
+    void DisableClrAmsiBypass();
 }

