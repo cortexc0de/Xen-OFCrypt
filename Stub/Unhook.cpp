@@ -11,6 +11,17 @@
 #include "Unhook.h"
 #include "ApiResolver.h"
 
+// Local CRC32C hash constants for kernel32 functions used in this file
+// Computed via Crc32C::ConstHash (polynomial 0x82F63B78)
+namespace {
+    constexpr DWORD HASH_CRC_CREATEFILEA        = 0xA1B83AEB;
+    constexpr DWORD HASH_CRC_CREATEFILEMAPPINGA  = 0x13252564;
+    constexpr DWORD HASH_CRC_MAPVIEWOFFILE       = 0x7B345594;
+    constexpr DWORD HASH_CRC_UNMAPVIEWOFFILE     = 0x2264C6B5;
+    constexpr DWORD HASH_CRC_CLOSEHANDLE         = 0x2E67D349;
+    constexpr DWORD HASH_CRC_VIRTUALPROTECT      = 0xF8ADA5AC;
+}
+
 namespace Unhook
 {
     bool RefreshNtdll()
@@ -26,12 +37,12 @@ namespace Unhook
         typedef BOOL   (WINAPI* pfnCloseHandle)(HANDLE);
         typedef BOOL   (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
 
-        pfnCreateFileA        pCreateFileA        = (pfnCreateFileA)Api::GetProcByHashCrc(hK32, Api::CrcFn::CreateFileA);
-        pfnCreateFileMappingA pCreateFileMappingA = (pfnCreateFileMappingA)Api::GetProcByHashCrc(hK32, Api::CrcFn::CreateFileMappingA);
-        pfnMapViewOfFile      pMapViewOfFile      = (pfnMapViewOfFile)Api::GetProcByHashCrc(hK32, Api::CrcFn::MapViewOfFile);
-        pfnUnmapViewOfFile    pUnmapViewOfFile    = (pfnUnmapViewOfFile)Api::GetProcByHashCrc(hK32, Api::CrcFn::UnmapViewOfFile);
-        pfnCloseHandle        pCloseHandle        = (pfnCloseHandle)Api::GetProcByHashCrc(hK32, Api::CrcFn::CloseHandle);
-        pfnVirtualProtect     pVirtualProtect     = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+        pfnCreateFileA        pCreateFileA        = (pfnCreateFileA)Api::GetProcByHashCrc(hK32, HASH_CRC_CREATEFILEA);
+        pfnCreateFileMappingA pCreateFileMappingA = (pfnCreateFileMappingA)Api::GetProcByHashCrc(hK32, HASH_CRC_CREATEFILEMAPPINGA);
+        pfnMapViewOfFile      pMapViewOfFile      = (pfnMapViewOfFile)Api::GetProcByHashCrc(hK32, HASH_CRC_MAPVIEWOFFILE);
+        pfnUnmapViewOfFile    pUnmapViewOfFile    = (pfnUnmapViewOfFile)Api::GetProcByHashCrc(hK32, HASH_CRC_UNMAPVIEWOFFILE);
+        pfnCloseHandle        pCloseHandle        = (pfnCloseHandle)Api::GetProcByHashCrc(hK32, HASH_CRC_CLOSEHANDLE);
+        pfnVirtualProtect     pVirtualProtect     = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, HASH_CRC_VIRTUALPROTECT);
 
         if (!pCreateFileA || !pCreateFileMappingA || !pMapViewOfFile ||
             !pUnmapViewOfFile || !pCloseHandle || !pVirtualProtect)

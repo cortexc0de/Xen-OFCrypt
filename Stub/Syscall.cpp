@@ -125,7 +125,18 @@ namespace Syscall
         if (count == 0) return 0;
 
         // Сортируем по адресу — SSN соответствует позиции в отсортированном массиве
-        qsort(entries, count, sizeof(NtExportEntry), CompareByAddress);
+        // Insertion sort (no CRT qsort dependency for /NODEFAULTLIB)
+        for (int i = 1; i < count; i++)
+        {
+            NtExportEntry tmp = entries[i];
+            int j = i - 1;
+            while (j >= 0 && (ULONG_PTR)entries[j].address > (ULONG_PTR)tmp.address)
+            {
+                entries[j + 1] = entries[j];
+                j--;
+            }
+            entries[j + 1] = tmp;
+        }
 
         // Ищем целевую функцию в отсортированном массиве
         for (int i = 0; i < count; i++)

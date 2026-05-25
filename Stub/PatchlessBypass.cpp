@@ -16,6 +16,18 @@
 
 namespace PatchlessBypass
 {
+    // Manual type definitions (avoids pulling in winternl.h)
+    typedef struct _CLIENT_ID_FIX {
+        HANDLE UniqueProcess;
+        HANDLE UniqueThread;
+    } CLIENT_ID_FIX;
+
+    typedef struct _UNICODE_STRING_FIX {
+        USHORT Length;
+        USHORT MaximumLength;
+        PWCH Buffer;
+    } UNICODE_STRING_FIX;
+
     // Pre-computed CRC32C hash constants
     static constexpr DWORD HASH_NtQuerySystemInformation = 0x4866DF3C;
     static constexpr DWORD HASH_VirtualFree              = 0xC21C378D;
@@ -51,7 +63,7 @@ namespace PatchlessBypass
         LARGE_INTEGER CreateTime;
         ULONG WaitTime;
         PVOID StartAddress;
-        CLIENT_ID ClientId;
+        CLIENT_ID_FIX ClientId;
         LONG Priority;
         LONG BasePriority;
         ULONG ContextSwitchCount;
@@ -97,7 +109,7 @@ namespace PatchlessBypass
         ULONG Spare5;
         LARGE_INTEGER UserTime;
         LARGE_INTEGER KernelTime;
-        UNICODE_STRING ProcessName;
+        UNICODE_STRING_FIX ProcessName;
         ULONG BasePriority;
         ULONG Spare6;
         ULONG Spare7;
@@ -186,7 +198,7 @@ namespace PatchlessBypass
             void* SecurityQualityOfService;
         } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
 
-        CLIENT_ID cid = {};
+        CLIENT_ID_FIX cid = {};
         cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
         cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
 
@@ -240,7 +252,7 @@ namespace PatchlessBypass
             void* SecurityQualityOfService;
         } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
 
-        CLIENT_ID cid = {};
+        CLIENT_ID_FIX cid = {};
         cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
         cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
 
@@ -428,7 +440,7 @@ namespace PatchlessBypass
             void* SecurityQualityOfService;
         } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
 
-        CLIENT_ID cid = {};
+        CLIENT_ID_FIX cid = {};
         cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
         cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
 
@@ -468,7 +480,7 @@ namespace PatchlessBypass
             void* SecurityQualityOfService;
         } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
 
-        CLIENT_ID cid = {};
+        CLIENT_ID_FIX cid = {};
         cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
         cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
 

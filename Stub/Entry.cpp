@@ -178,7 +178,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     if (GlobalConfig.bMotwStrip) {
         if (Motw::StripAndRelaunch()) {
             // Successfully re-launched without MOTW — exit this instance
-            ExitProcess(0);
+            __fastfail(0x29);
         }
         // If StripAndRelaunch returns false, MOTW was already gone — continue
     }

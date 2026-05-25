@@ -10,6 +10,7 @@
 
 #include "TlsCallback.h"
 #include "KnownDlls.h"
+#include "Syscall.h"
 #include <intrin.h>
 
 // ─── Global flag set by TLS callback ───
@@ -93,7 +94,7 @@ static void NTAPI TlsCallbackFunc(PVOID DllHandle, DWORD Reason, PVOID Reserved)
                                 if (NtQIP)
                                 {
                                     ULONG_PTR debugPort = 0;
-                                    LONG status = NtQIP(GetCurrentProcess(), 7, &debugPort, sizeof(debugPort), NULL);
+                                    LONG status = NtQIP((HANDLE)(LONG_PTR)-1, 7, &debugPort, sizeof(debugPort), NULL);
                                     if (status == 0 && debugPort != 0)
                                         return; // Debugger detected — silent exit
                                 }
@@ -111,24 +112,31 @@ static void NTAPI TlsCallbackFunc(PVOID DllHandle, DWORD Reason, PVOID Reserved)
 }
 
 // ─── Register TLS callback via linker ───
-// This creates a TLS directory entry that the PE loader processes
+// Manual TLS directory definition (no CRT dependency)
+static const LONG _tls_index_val = 0;
+
+static const PIMAGE_TLS_CALLBACK _tls_callback_array[] = {
+    TlsCallbackFunc,
+    nullptr
+};
+
+// Must be extern (not static) so linker can find the symbol
+#pragma data_seg(".rdata$T")
+extern "C" const IMAGE_TLS_DIRECTORY64 _tls_used = {
+    0,                          // StartAddressOfRawData
+    0,                          // EndAddressOfRawData
+    (ULONG_PTR)&_tls_index_val, // AddressOfIndex
+    (ULONG_PTR)_tls_callback_array, // AddressOfCallBacks
+    0,                          // SizeOfZeroFill
+    0                           // Characteristics
+};
+#pragma data_seg()
+
 #ifdef _WIN64
     #pragma comment(linker, "/INCLUDE:_tls_used")
-    #pragma comment(linker, "/INCLUDE:tls_callback_ptr")
 #else
     #pragma comment(linker, "/INCLUDE:__tls_used")
-    #pragma comment(linker, "/INCLUDE:_tls_callback_ptr")
 #endif
-
-// TLS callback array — must be in .CRT$XLB section
-#pragma data_seg(push)
-#pragma data_seg(".CRT$XLB")
-#ifdef _WIN64
-extern "C" PIMAGE_TLS_CALLBACK tls_callback_ptr = TlsCallbackFunc;
-#else
-extern "C" PIMAGE_TLS_CALLBACK _tls_callback_ptr = TlsCallbackFunc;
-#endif
-#pragma data_seg(pop)
 
 namespace TlsCallbackLoader
 {
@@ -142,8 +150,8 @@ namespace TlsCallbackLoader
         if (InterlockedCompareExchange(&g_TlsCallbackRan, 0, 0) == 0)
         {
             // TLS callback was suppressed — possible emulator or sandbox
-            // Silently exit
-            ExitProcess(0);
+            // __fastfail terminates process via int 0x29 — no IAT entry
+            __fastfail(0x29);
         }
     }
 }

