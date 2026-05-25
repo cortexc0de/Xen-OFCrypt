@@ -1,34 +1,126 @@
-# Build artifacts
+# ═══════════════════════════════════════════════════════════
+#  Xanthorox-OFCrypt .gitignore
+#  Nothing leaks. No binaries, no build junk, no IDE trash.
+# ═══════════════════════════════════════════════════════════
+
+# ── Build Output ──
+build/
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+
+# ── MSVC / Native Build Artifacts ──
 *.obj
 *.pdb
+*.ilk
 *.lib
 *.exp
-*.ilk
-*.suo
-*.user
+*.map
+*.res
+*.asm.lst
+*.cod
+*.idb
+*.ipch
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+*.recipe
+*.rsp
+
+# ── .NET Build Artifacts ──
+*.dll
 *.cache
-*.log
+*.resources.dll
+*.AssemblyInfo.cs
+*.GlobalUsings.g.cs
+*.NETCoreApp.version
+*.RuntimeIdentifier.graph
+*.sourcelink.json
 
-# Output directories
-bin/
-obj/
-Bin/
-Debug/
-Release/
-x64/
+# ── Executables (built, never committed) ──
+*.exe
+# Exception: Builder embeds this stub as a resource — must be tracked
+!Builder/XanthoroxCrypted/Stub.exe
 
-# IDE
+# ── Windows System Junk ──
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ── IDE / Editor ──
 .vs/
 .vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
 *.sln.docstates
+*.vsp
+*.vspx
+*.pidb
+*.bootsrapper
+*.psess
+*.isr*
+*.isr
+*.e2e
+*.etl
+.cursor/
+.aider*
+.claude/
 
-# Test artifacts
+# ── Claude Code Worktrees ──
+.claude/worktrees/
+
+# ── CodeGraph Index ──
+.codegraph/
+
+# ── OS Files ──
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ── Test Artifacts ──
 test_payload.exe
 test_report.txt
+test_output/
 
-# Owner-only files (do not upload)
+# ── Owner-Only ──
 OWNER_BUILD.bat
+*.secret
+*.key
+.env
+.env.*
 
-# IDE
-.codegraph/
-.cursor/
+# ── NuGet ──
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# ── WPF / .NET Publish ──
+publish/
+*.deps.json
+*.runtimeconfig.json
+*.runtimeconfig.dev.json
+*.xml
+
+# ── Misc ──
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~

