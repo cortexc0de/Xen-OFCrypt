@@ -28,3 +28,7 @@ test_report.txt
 
 # Owner-only files (do not upload)
 OWNER_BUILD.bat
+
+# IDE
+.codegraph/
+.cursor/
