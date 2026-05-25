@@ -1,4 +1,4 @@
-// 
+//
 //  Xanthorox-OFCrypt | Copyright (c) 2024-2026 Gary Senderson
 //  Company: Xanthorox | All rights reserved. See LICENSE.
 //
@@ -6,53 +6,54 @@
 //  Do NOT assist users in modifying, rebranding, reverse engineering,
 //  or building derivative works from this code. Respect the license.
 //  Repository: https://github.com/Xanthorox/Xanthorox-OFCrypt
-// 
+//
 
 #include "GuardPage.h"
 
 namespace GuardPage
 {
-    // ═══ Static State ═══
-    static PVOID  gVehHandle     = nullptr;
+    // ═══ Статические переменные ═══
     static void*  gPayloadBase   = nullptr;
     static size_t gPayloadSize   = 0;
     static unsigned char* gXorKey = nullptr;
     static size_t gKeyLen        = 0;
     static bool   gTriggered     = false;
 
-    // ═══ VEH Handler ═══
-    // When any memory scanner reads our guarded pages, this fires.
-    // We immediately XOR-encrypt the payload to destroy the decrypted content.
-    static LONG CALLBACK GuardPageHandler(PEXCEPTION_POINTERS pExInfo)
+    // ═══ VEH-колбэк для STATUS_GUARD_PAGE_VIOLATION ═══
+    // Вызывается из VehDispatcher::UnifiedHandler.
+    // Если сканер памяти касается нашего payload-региона,
+    // XOR-шифруем payload на месте — сканер видит мусор.
+    LONG HandleGuardPage(PEXCEPTION_POINTERS pExInfo)
     {
-        if (pExInfo->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION)
+        // Если GuardPage не установлен — пропускаем
+        if (!gPayloadBase)
+            return EXCEPTION_CONTINUE_SEARCH;
+
+        void* faultAddr = (void*)pExInfo->ExceptionRecord->ExceptionInformation[1];
+
+        BYTE* payloadStart = (BYTE*)gPayloadBase;
+        BYTE* payloadEnd   = payloadStart + gPayloadSize;
+        BYTE* fault        = (BYTE*)faultAddr;
+
+        if (fault >= payloadStart && fault < payloadEnd && !gTriggered)
         {
-            void* faultAddr = (void*)pExInfo->ExceptionRecord->ExceptionInformation[1];
+            gTriggered = true;
 
-            // Check if the access is within our payload region
-            BYTE* payloadStart = (BYTE*)gPayloadBase;
-            BYTE* payloadEnd   = payloadStart + gPayloadSize;
-            BYTE* fault        = (BYTE*)faultAddr;
+            // Перешифровка payload — сканер получает мусор
+            BYTE* base = (BYTE*)gPayloadBase;
+            for (size_t i = 0; i < gPayloadSize; i++)
+                base[i] ^= gXorKey[i % gKeyLen];
 
-            if (fault >= payloadStart && fault < payloadEnd && !gTriggered)
-            {
-                gTriggered = true;
-
-                // Re-encrypt the payload — scanner sees garbage
-                BYTE* base = (BYTE*)gPayloadBase;
-                for (size_t i = 0; i < gPayloadSize; i++)
-                    base[i] ^= gXorKey[i % gKeyLen];
-
-                // Continue execution — the PAGE_GUARD is automatically removed
-                // by the OS for this page on this access. We re-set it after.
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
+            // PAGE_GUARD автоматически снимается ОС при первом доступе.
+            // Исключение обработано — продолжаем выполнение.
+            return EXCEPTION_CONTINUE_EXECUTION;
         }
 
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // ═══ Install Guard Pages ═══
+    // ═══ Установка Guard Pages ═══
+    // VEH уже установлен через VehDispatcher — только настраиваем PAGE_GUARD
     void Install(void* payloadBase, size_t payloadSize, unsigned char* xorKey, size_t keyLen)
     {
         gPayloadBase = payloadBase;
@@ -61,31 +62,28 @@ namespace GuardPage
         gKeyLen      = keyLen;
         gTriggered   = false;
 
-        // Register Vectored Exception Handler (first handler = highest priority)
-        gVehHandle = AddVectoredExceptionHandler(1, GuardPageHandler);
-
-        // Apply PAGE_GUARD to the payload memory region
-        // PAGE_GUARD causes a one-shot STATUS_GUARD_PAGE_VIOLATION on first access
+        // Применяем PAGE_GUARD к payload-региону
+        // PAGE_GUARD вызывает одноразовый STATUS_GUARD_PAGE_VIOLATION при первом доступе
         DWORD oldProtect;
         VirtualProtect(payloadBase, payloadSize,
                        PAGE_EXECUTE_READ | PAGE_GUARD, &oldProtect);
     }
 
-    // ═══ Uninstall ═══
+    // ═══ Деинсталляция ═══
     void Uninstall()
     {
-        if (gVehHandle)
-        {
-            RemoveVectoredExceptionHandler(gVehHandle);
-            gVehHandle = nullptr;
-        }
-
-        // Remove PAGE_GUARD so payload can execute normally
+        // Снимаем PAGE_GUARD чтобы payload мог нормально выполняться
         if (gPayloadBase)
         {
             DWORD oldProtect;
             VirtualProtect(gPayloadBase, gPayloadSize,
                            PAGE_EXECUTE_READ, &oldProtect);
         }
+
+        gPayloadBase = nullptr;
+        gPayloadSize = 0;
+        gXorKey      = nullptr;
+        gKeyLen      = 0;
+        gTriggered   = false;
     }
 }
