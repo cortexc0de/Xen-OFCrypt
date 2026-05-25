@@ -126,6 +126,7 @@ namespace Api
         constexpr DWORD ADVAPI32   = Crc32C::ConstHash("advapi32.dll");
         constexpr DWORD OLE32      = Crc32C::ConstHash("ole32.dll");
         constexpr DWORD MSCOREE    = Crc32C::ConstHash("mscoree.dll");
+        constexpr DWORD BCRYPT     = Crc32C::ConstHash("bcrypt.dll");
     }
 
     // ═══ CRC32C-based function hashes (expanded set for premium features) ═══
