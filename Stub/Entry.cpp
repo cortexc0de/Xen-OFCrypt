@@ -192,6 +192,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     // If not, an emulator or sandbox suppressed it.
     TlsCallbackLoader::Init();
 
+    // ── Step 0c: Initialize CRC32C detection ──
+    Crc32C::DetectSse42();
+
     // ── Step 1: Unhook ntdll ──
     if (GlobalConfig.bKnownDllsUnhook) {
         KnownDlls::UnhookNtdll();
