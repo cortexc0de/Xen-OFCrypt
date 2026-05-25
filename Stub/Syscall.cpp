@@ -66,9 +66,92 @@ namespace Syscall
     // ═══ SSN Resolution ═══
     // Method 1: Direct pattern match — 4C 8B D1 B8 XX XX 00 00
     // Method 2: Halo's Gate — neighbor sorting for hooked functions
+    // Method 3: FreshyCalls — sorted index fallback (all stubs hooked)
+
+    // FreshyCalls helper: Nt export entry for sorted-index SSN extraction
+    struct NtExportEntry {
+        const char* name;
+        void*       address;
+    };
+
+    // Comparator: sort Nt* exports by virtual address ascending
+    static int CompareByAddress(const void* a, const void* b)
+    {
+        const NtExportEntry* ea = (const NtExportEntry*)a;
+        const NtExportEntry* eb = (const NtExportEntry*)b;
+        if (ea->address < eb->address) return -1;
+        if (ea->address > eb->address) return  1;
+        return 0;
+    }
+
+    // Method 3: FreshyCalls — collect all Nt* exports, sort by address,
+    // the sorted position index equals the SSN.
+    // Works even when every stub is hooked (no clean patterns available).
+    static DWORD ResolveBySortedIndex(BYTE* ntdllBase, const char* targetName)
+    {
+        PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)ntdllBase;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+
+        PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(ntdllBase + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+
+        DWORD expRVA = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        if (expRVA == 0) return 0;
+
+        PIMAGE_EXPORT_DIRECTORY expDir = (PIMAGE_EXPORT_DIRECTORY)(ntdllBase + expRVA);
+        DWORD* names    = (DWORD*)(ntdllBase + expDir->AddressOfNames);
+        WORD*  ordinals = (WORD*)(ntdllBase + expDir->AddressOfNameOrdinals);
+        DWORD* funcs    = (DWORD*)(ntdllBase + expDir->AddressOfFunctions);
+
+        // Collect Nt* exports (max 512 — more than enough for ntdll)
+        NtExportEntry entries[512];
+        int count = 0;
+
+        for (DWORD i = 0; i < expDir->NumberOfNames && count < 512; i++)
+        {
+            const char* fn = (const char*)(ntdllBase + names[i]);
+            // Nt-функции начинаются с 'N' и 't' — вторая буква 't'
+            if (fn[0] == 'N' && fn[1] == 't')
+            {
+                entries[count].name    = fn;
+                entries[count].address = (void*)(ntdllBase + funcs[ordinals[i]]);
+                count++;
+            }
+        }
+
+        if (count == 0) return 0;
+
+        // Сортируем по адресу — SSN соответствует позиции в отсортированном массиве
+        qsort(entries, count, sizeof(NtExportEntry), CompareByAddress);
+
+        // Ищем целевую функцию в отсортированном массиве
+        for (int i = 0; i < count; i++)
+        {
+            // Сравниваем имя (DJB2 хеш для скорости)
+            const char* a = entries[i].name;
+            const char* b = targetName;
+            while (*a && *b && *a == *b) { a++; b++; }
+            if (*a == 0 && *b == 0)
+                return (DWORD)i;  // Позиция в отсортированном массиве = SSN
+        }
+
+        return 0;
+    }
+
     static bool ResolveSSN(HMODULE hNtdll, const char* funcName, IndirectSyscallEntry* entry)
     {
-        FARPROC addr = GetProcAddress(hNtdll, funcName);
+        // Resolve GetProcAddress через CRC32C хеш (без IAT)
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+
+        constexpr DWORD hashGPA = Crc32C::ConstHash("GetProcAddress");
+        FARPROC pGPA = Api::GetProcByHashCrc(hK32, hashGPA);
+        if (!pGPA) return false;
+
+        typedef FARPROC(WINAPI* fnGPA)(HMODULE, LPCSTR);
+        fnGPA gpa = (fnGPA)pGPA;
+
+        FARPROC addr = gpa(hNtdll, funcName);
         if (!addr) return false;
 
         unsigned char* ptr = (unsigned char*)addr;
@@ -100,6 +183,16 @@ namespace Syscall
                 entry->resolved = true;
                 return true;
             }
+        }
+
+        // Method 3: FreshyCalls — sorted index fallback
+        // Все соседи хуканы — извлекаем SSN из позиции в отсортированной таблице экспортов
+        DWORD sortedSSN = ResolveBySortedIndex((BYTE*)hNtdll, funcName);
+        if (sortedSSN != 0)
+        {
+            entry->ssn = sortedSSN;
+            entry->resolved = true;
+            return true;
         }
 
         return false;
