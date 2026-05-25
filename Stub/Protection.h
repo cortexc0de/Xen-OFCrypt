@@ -10,7 +10,6 @@
 
 #pragma once
 #include <windows.h>
-#include <stdio.h>
 
 // =================================================================================
 //   XANTHOROX-OFCRYPT | NATION-STATE GRADE LOADER

