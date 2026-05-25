@@ -108,7 +108,7 @@ namespace XanthoroxCrypted.Core
 
             // ═══ 6. SLEEP OBF + STAGED LOAD ═══
             // Both add delays. Combined they could make startup slow (~10-15 sec).
-            if (config.SleepObf && config.StagedLoad)
+            if (config.EkkoSleep && config.StagedLoad)
             {
                 result.Warnings.Add("Sleep Obfuscation + Staged Load both active — startup delay will be ~10-15 seconds. " +
                     "This is stronger against sandboxes but slower for the end user.");
