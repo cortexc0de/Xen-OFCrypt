@@ -87,7 +87,9 @@ namespace GadgetPool
     Gadget* GetRandom()
     {
         if (s_Count == 0) return nullptr;
-        DWORD idx = GetTickCount() % s_Count;
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        auto pGetTickCount = (DWORD(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetTickCount);
+        DWORD idx = (pGetTickCount ? pGetTickCount() : 0) % s_Count;
         return &s_Gadgets[idx];
     }
 

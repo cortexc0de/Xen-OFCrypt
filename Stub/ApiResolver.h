@@ -174,6 +174,10 @@ namespace Api
         constexpr DWORD CoUninitialize               = Crc32C::ConstHash("CoUninitialize");
         constexpr DWORD AddVectoredExceptionHandler   = Crc32C::ConstHash("AddVectoredExceptionHandler");
         constexpr DWORD RemoveVectoredExceptionHandler = Crc32C::ConstHash("RemoveVectoredExceptionHandler");
+        constexpr DWORD HeapAlloc                     = Crc32C::ConstHash("HeapAlloc");
+        constexpr DWORD HeapFree                      = Crc32C::ConstHash("HeapFree");
+        constexpr DWORD FlsAlloc                      = Crc32C::ConstHash("FlsAlloc");
+        constexpr DWORD FlsFree                       = Crc32C::ConstHash("FlsFree");
     }
 
     // CRC32C-based resolution (PEB walk + export table with CRC32C comparison)

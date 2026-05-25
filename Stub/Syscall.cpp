@@ -26,7 +26,7 @@ namespace Syscall
     extern "C" NTSTATUS NtWriteVirtualMemory_I(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
     extern "C" NTSTATUS NtCreateThreadEx_I(PHANDLE, ACCESS_MASK, PVOID, HANDLE, PVOID, PVOID, ULONG, SIZE_T, SIZE_T, SIZE_T, PVOID);
     extern "C" NTSTATUS NtOpenProcess_I(PHANDLE, ACCESS_MASK, void*);
-    extern "C" NTSTATUS NtOpenThread_I(PHANDLE, ACCESS_MASK, void*);
+    extern "C" NTSTATUS NtOpenThread_I(PHANDLE, ACCESS_MASK, void*, void*);
     extern "C" NTSTATUS NtSuspendThread_I(HANDLE, PULONG);
     extern "C" NTSTATUS NtResumeThread_I(HANDLE, PULONG);
     extern "C" NTSTATUS NtQueueApcThread_I(HANDLE, PVOID, PVOID, PVOID, PVOID);
@@ -46,7 +46,7 @@ namespace Syscall
     extern "C" NTSTATUS NtWriteVirtualMemory_D(HANDLE, PVOID, PVOID, SIZE_T, PSIZE_T);
     extern "C" NTSTATUS NtCreateThreadEx_D(PHANDLE, ACCESS_MASK, PVOID, HANDLE, PVOID, PVOID, ULONG, SIZE_T, SIZE_T, SIZE_T, PVOID);
     extern "C" NTSTATUS NtOpenProcess_D(PHANDLE, ACCESS_MASK, void*);
-    extern "C" NTSTATUS NtOpenThread_D(PHANDLE, ACCESS_MASK, void*);
+    extern "C" NTSTATUS NtOpenThread_D(PHANDLE, ACCESS_MASK, void*, void*);
     extern "C" NTSTATUS NtSuspendThread_D(HANDLE, PULONG);
     extern "C" NTSTATUS NtResumeThread_D(HANDLE, PULONG);
     extern "C" NTSTATUS NtQueueApcThread_D(HANDLE, PVOID, PVOID, PVOID, PVOID);
@@ -380,18 +380,18 @@ namespace Syscall
         return NtOpenProcess_D(processHandle, access, objAttr);
     }
 
-    NTSTATUS NtOpenThread(PHANDLE threadHandle, ACCESS_MASK access, void* objAttr)
+    NTSTATUS NtOpenThread(PHANDLE threadHandle, ACCESS_MASK access, void* objAttr, void* clientId)
     {
         IndirectSyscallEntry& e = s_Entries[IDX_NtOpenThread];
         if (!e.resolved) return (NTSTATUS)0xC0000001;
 
-        typedef NTSTATUS(NTAPI* fn_t)(PHANDLE, ACCESS_MASK, void*);
+        typedef NTSTATUS(NTAPI* fn_t)(PHANDLE, ACCESS_MASK, void*, void*);
 
         if (e.gadgetAvailable)
-            return NtOpenThread_I(threadHandle, access, objAttr);
+            return NtOpenThread_I(threadHandle, access, objAttr, clientId);
         if (e.hotpatchAvailable)
-            return ((fn_t)e.hotpatchAddr)(threadHandle, access, objAttr);
-        return NtOpenThread_D(threadHandle, access, objAttr);
+            return ((fn_t)e.hotpatchAddr)(threadHandle, access, objAttr, clientId);
+        return NtOpenThread_D(threadHandle, access, objAttr, clientId);
     }
 
     NTSTATUS NtSuspendThread(HANDLE threadHandle, PULONG previousSuspendCount)

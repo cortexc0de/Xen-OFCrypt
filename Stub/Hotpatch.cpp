@@ -91,6 +91,14 @@ namespace Hotpatch
 
     bool InstallTrampoline(DWORD ssn, Trampoline* out)
     {
+        // Динамическое разрешение VirtualProtect
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+
+        typedef BOOL (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+        pfnVirtualProtect pVirtualProtect = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+        if (!pVirtualProtect) return false;
+
         for (DWORD i = 0; i < s_SlotCount; i++)
         {
             if (s_Slots[i].used) continue;
@@ -102,7 +110,7 @@ namespace Hotpatch
 
             // Make 8 bytes writable (5 hotpatch + 3 function prologue)
             DWORD oldProtect;
-            if (!VirtualProtect(slot, 8, PAGE_EXECUTE_READWRITE, &oldProtect))
+            if (!pVirtualProtect(slot, 8, PAGE_EXECUTE_READWRITE, &oldProtect))
                 continue;
 
             // Write trampoline:
@@ -117,7 +125,7 @@ namespace Hotpatch
 
             // Restore protection (keep execute)
             DWORD tmp;
-            VirtualProtect(slot, 8, PAGE_EXECUTE_READ, &tmp);
+            pVirtualProtect(slot, 8, PAGE_EXECUTE_READ, &tmp);
 
             out->address = slot;
             out->active = true;

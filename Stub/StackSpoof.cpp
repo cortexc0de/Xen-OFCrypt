@@ -95,8 +95,11 @@ namespace StackSpoof
     {
         if (s_Count == 0) return nullptr;
 
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        auto pGetTickCount = (DWORD(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetTickCount);
+
         // Prefer FF E3 (jmp rbx) type for SpoofCall4 compatibility
-        DWORD start = GetTickCount() % s_Count;
+        DWORD start = (pGetTickCount ? pGetTickCount() : 0) % s_Count;
         for (DWORD i = 0; i < s_Count; i++)
         {
             DWORD idx = (start + i) % s_Count;

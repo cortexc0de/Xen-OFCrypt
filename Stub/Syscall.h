@@ -71,7 +71,7 @@ namespace Syscall
     NTSTATUS NtCreateThreadEx(PHANDLE threadHandle, ACCESS_MASK access, PVOID objAttr, HANDLE process, PVOID startAddr, PVOID param, ULONG flags, SIZE_T zeroBits, SIZE_T stackSize, SIZE_T maxStackSize, PVOID attrList);
 
     NTSTATUS NtOpenProcess(PHANDLE processHandle, ACCESS_MASK access, void* objAttr);
-    NTSTATUS NtOpenThread(PHANDLE threadHandle, ACCESS_MASK access, void* objAttr);
+    NTSTATUS NtOpenThread(PHANDLE threadHandle, ACCESS_MASK access, void* objAttr, void* clientId);
     NTSTATUS NtSuspendThread(HANDLE threadHandle, PULONG previousSuspendCount);
     NTSTATUS NtResumeThread(HANDLE threadHandle, PULONG previousSuspendCount);
     NTSTATUS NtQueueApcThread(HANDLE threadHandle, PVOID apcRoutine, PVOID apcParam1, PVOID apcParam2, PVOID apcParam3);

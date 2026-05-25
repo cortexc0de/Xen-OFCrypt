@@ -9,9 +9,14 @@
 // 
 
 #include "AntiEmul.h"
+#include "ApiResolver.h"
 
 namespace AntiEmul
 {
+    // Typedefs for dynamically resolved heap functions
+    typedef HANDLE (WINAPI* pHeapAlloc)(HANDLE, DWORD, SIZE_T);
+    typedef BOOL   (WINAPI* pHeapFree)(HANDLE, DWORD, LPCVOID);
+
     // ─── Technique 1: Timing check ───
     // Real hardware takes >0ms for heavy math. Emulators often shortcut.
     static bool TimingCheck()
@@ -44,9 +49,18 @@ namespace AntiEmul
         HANDLE heap = HeapCreate(0, 0, 0);
         if (!heap) return true; // Emulator failed to create heap
 
+        // Resolve HeapAlloc/HeapFree once
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return true;
+
+        auto fnHeapAlloc = (pHeapAlloc)Api::GetProcByHashCrc(hK32, Api::CrcFn::HeapAlloc);
+        auto fnHeapFree  = (pHeapFree)Api::GetProcByHashCrc(hK32, Api::CrcFn::HeapFree);
+
+        if (!fnHeapAlloc || !fnHeapFree) return true;
+
         // Allocate and check alignment
-        void* p1 = HeapAlloc(heap, HEAP_ZERO_MEMORY, 37);
-        void* p2 = HeapAlloc(heap, HEAP_ZERO_MEMORY, 41);
+        void* p1 = fnHeapAlloc(heap, HEAP_ZERO_MEMORY, 37);
+        void* p2 = fnHeapAlloc(heap, HEAP_ZERO_MEMORY, 41);
 
         bool suspicious = false;
 
@@ -63,8 +77,8 @@ namespace AntiEmul
         if (p1 && p2 && p1 == p2)
             suspicious = true;
 
-        if (p1) HeapFree(heap, 0, p1);
-        if (p2) HeapFree(heap, 0, p2);
+        if (p1) fnHeapFree(heap, 0, p1);
+        if (p2) fnHeapFree(heap, 0, p2);
         HeapDestroy(heap);
 
         return suspicious;
@@ -97,15 +111,11 @@ namespace AntiEmul
         typedef DWORD(WINAPI* pFlsAlloc)(PFLS_CALLBACK_FUNCTION);
         typedef BOOL(WINAPI* pFlsFree)(DWORD);
 
-        HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
         if (!hK32) return true;
 
-        // Stack-built "FlsAlloc"
-        char fn1[] = { 'F','l','s','A','l','l','o','c',0 };
-        char fn2[] = { 'F','l','s','F','r','e','e',0 };
-
-        pFlsAlloc _FlsAlloc = (pFlsAlloc)GetProcAddress(hK32, fn1);
-        pFlsFree _FlsFree = (pFlsFree)GetProcAddress(hK32, fn2);
+        pFlsAlloc _FlsAlloc = (pFlsAlloc)Api::GetProcByHashCrc(hK32, Api::CrcFn::FlsAlloc);
+        pFlsFree  _FlsFree  = (pFlsFree)Api::GetProcByHashCrc(hK32, Api::CrcFn::FlsFree);
 
         if (!_FlsAlloc || !_FlsFree)
             return true; // Emulator doesn't support FLS
