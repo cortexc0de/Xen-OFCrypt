@@ -194,8 +194,58 @@ namespace XanthoroxCrypted.Core
                 Array.Copy(stubData, researchMarkerOffset, savedResearch, 0, researchRegionLen);
             }
 
+            // ── Build exclusion zones for PEMutator ──
+            var exclusions = new System.Collections.Generic.List<(int start, int end)>
+            {
+                (configOffset, configOffset + configRegionLen),
+                (keyOffset, keyOffset + keyRegionLen),
+                (payloadOffset, payloadOffset + payloadRegionLen)
+            };
+
+            // Protect integrity-check string literals from structural mutations.
+            // "Xanthorox" and "Xanthorox-OFCrypt" must survive in .text so
+            // Protection::VerifyIntegrity() can compare them at runtime.
+            byte[][] protectedStrings = {
+                System.Text.Encoding.ASCII.GetBytes("Xanthorox"),
+                System.Text.Encoding.ASCII.GetBytes("Xanthorox-OFCrypt"),
+            };
+            foreach (byte[] ps in protectedStrings)
+            {
+                for (int si = 0; si <= stubData.Length - ps.Length; si++)
+                {
+                    bool match = true;
+                    for (int j = 0; j < ps.Length && match; j++)
+                        if (stubData[si + j] != ps[j]) match = false;
+                    if (match)
+                        exclusions.Add((si, si + ps.Length));
+                }
+            }
+            if (researchMarkerOffset >= 0 && researchParams != null && researchParams.Length > 0)
+                exclusions.Add((researchMarkerOffset, researchMarkerOffset + researchRegionLen));
+
+            // Protect PE headers (DOS + PE + Optional + Sections) from any mutation
+            int peOffset = BitConverter.ToInt32(stubData, 0x3C);
+            int numSections = BitConverter.ToUInt16(stubData, peOffset + 6);
+            int optHeaderSize = BitConverter.ToUInt16(stubData, peOffset + 20);
+            int sectionHeadersEnd = peOffset + 24 + optHeaderSize + numSections * 40;
+            exclusions.Add((0, sectionHeadersEnd));
+
+            // Protect .reloc section data (relocation entries must not be modified)
+            int relocDdOffset = peOffset + 24 + 112 + 5 * 8; // DD[5] for PE32+
+            if (relocDdOffset + 8 <= stubData.Length)
+            {
+                uint relocRva = BitConverter.ToUInt32(stubData, relocDdOffset);
+                uint relocSz = BitConverter.ToUInt32(stubData, relocDdOffset + 4);
+                if (relocRva > 0 && relocSz > 0)
+                {
+                    int relocFileOff = RvaToFileOffset(stubData, relocRva);
+                    if (relocFileOff > 0)
+                        exclusions.Add((relocFileOff, relocFileOff + (int)relocSz));
+                }
+            }
+
             // ── PE Mutation (always active — makes every build unique) ──
-            PEMutator.Mutate(stubData);
+            PEMutator.Mutate(stubData, exclusions);
 
             // ── Restore patched data regions after mutation ──
             Array.Copy(savedConfig, 0, stubData, configOffset, configRegionLen);
@@ -235,6 +285,27 @@ namespace XanthoroxCrypted.Core
                     if (data[i + j] != marker[j]) { found = false; break; }
                 }
                 if (found) return i;
+            }
+            return -1;
+        }
+
+        private static int RvaToFileOffset(byte[] pe, uint rva)
+        {
+            int peOffset = BitConverter.ToInt32(pe, 0x3C);
+            int numSections = BitConverter.ToUInt16(pe, peOffset + 6);
+            int optHeaderSize = BitConverter.ToUInt16(pe, peOffset + 20);
+            int sectionStart = peOffset + 24 + optHeaderSize;
+
+            for (int s = 0; s < numSections; s++)
+            {
+                int secHdr = sectionStart + (s * 40);
+                if (secHdr + 40 > pe.Length) break;
+                uint secVa = BitConverter.ToUInt32(pe, secHdr + 12);
+                uint secVsz = BitConverter.ToUInt32(pe, secHdr + 8);
+                uint secRaw = BitConverter.ToUInt32(pe, secHdr + 20);
+                uint secRsz = BitConverter.ToUInt32(pe, secHdr + 16);
+                if (rva >= secVa && rva < secVa + Math.Max(secVsz, secRsz))
+                    return (int)(secRaw + (rva - secVa));
             }
             return -1;
         }

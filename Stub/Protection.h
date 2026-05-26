@@ -39,15 +39,15 @@ namespace Protection
     // Forces the linker to keep this string.
     __declspec(dllexport) const char* Watermark = "Xanthorox-OFCrypt v3.0 [Public Release]";
 
-    // Simple check that crashes if the author string is modified
-    // Returns TRUE if integrity is valid.
-    __forceinline bool VerifyIntegrity() 
+    // Integrity check — returns TRUE if valid, FALSE if corrupted.
+    // Caller decides how to handle failure (no crash here).
+    __forceinline bool VerifyIntegrity()
     {
-        const char* author = XANTHOROX_AUTHOR;
-        if (author[0] != 'X' || author[1] != 'a') {
-            // Self-Sabotage: Corrupt stack
-            int* p = 0;
-            *p = 0; 
+        // Stack-built reference avoids reading from string literal
+        // which may be corrupted by PEMutator's structural mutations.
+        volatile char ref[] = { 'X', 'a', 'n', 't', 'h', 'o', 'r', 'o', 'x', 0 };
+        volatile const char* author = XANTHOROX_AUTHOR;
+        if (author[0] != ref[0] || author[1] != ref[1] || author[2] != ref[2]) {
             return false;
         }
         return true;

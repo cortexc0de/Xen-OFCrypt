@@ -23,6 +23,11 @@ static void NTAPI TlsCallbackFunc(PVOID DllHandle, DWORD Reason, PVOID Reserved)
 {
     if (Reason != DLL_PROCESS_ATTACH) return;
 
+    // E2E DEBUG: Skip all TLS callback logic — causes crash before WinMain
+    // KnownDlls::MiniUnhookForTls() and PEB walking may fail with /NODEFAULTLIB
+    InterlockedExchange(&g_TlsCallbackRan, 1);
+    return;
+
     // ── Mini-unhook: restore EtwEventWrite before any ETW logging fires ──
     // EDR hooks EtwEventWrite early — TLS callback runs before WinMain,
     // so this removes the hook before our anti-debug checks can be logged.
@@ -112,7 +117,9 @@ static void NTAPI TlsCallbackFunc(PVOID DllHandle, DWORD Reason, PVOID Reserved)
 }
 
 // ─── Register TLS callback via linker ───
-// Manual TLS directory definition (no CRT dependency)
+// E2E DEBUG: Disabled TLS callback registration — causes crash before WinMain
+// with /NODEFAULTLIB linking. Will re-enable after fixing the issue.
+/*
 static const LONG _tls_index_val = 0;
 
 static const PIMAGE_TLS_CALLBACK _tls_callback_array[] = {
@@ -137,6 +144,7 @@ extern "C" const IMAGE_TLS_DIRECTORY64 _tls_used = {
 #else
     #pragma comment(linker, "/INCLUDE:__tls_used")
 #endif
+*/
 
 namespace TlsCallbackLoader
 {

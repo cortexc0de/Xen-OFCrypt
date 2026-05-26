@@ -15,6 +15,10 @@
 
 namespace Api
 {
+    // Forward declarations for mutual recursion with ResolveForward
+    FARPROC GetProcByHash(HMODULE hModule, DWORD funcHash);
+    FARPROC GetProcByHashCrc(HMODULE hModule, DWORD funcHash);
+
     DWORD RuntimeHash(const char* str)
     {
         DWORD hash = 5381;
@@ -69,6 +73,64 @@ namespace Api
         return NULL;
     }
 
+    // Resolve forwarded export: parse "module.function" or "module.#ordinal"
+    static FARPROC ResolveForward(const char* fwd, bool useCrc)
+    {
+        const char* dot = fwd;
+        while (*dot && *dot != '.') dot++;
+        if (*dot != '.') return NULL;
+
+        char modName[256] = { 0 };
+        int modLen = (int)(dot - fwd);
+        memcpy(modName, fwd, modLen);
+        modName[modLen] = '.';
+        modName[modLen + 1] = 'd';
+        modName[modLen + 2] = 'l';
+        modName[modLen + 3] = 'l';
+
+        const char* fnName = dot + 1;
+
+        HMODULE hTarget;
+        if (useCrc)
+            hTarget = GetModuleByHashCrc(Crc32C::RuntimeHash(modName));
+        else
+            hTarget = GetModuleByHash(RuntimeHash(modName));
+        if (!hTarget) return NULL;
+
+        if (fnName[0] == '#')
+        {
+            // Ordinal forward: resolve by ordinal
+            DWORD ordinal = 0;
+            const char* p = fnName + 1;
+            while (*p >= '0' && *p <= '9')
+                ordinal = ordinal * 10 + (*p++ - '0');
+
+            BYTE* tbase = (BYTE*)hTarget;
+            PIMAGE_DOS_HEADER tdos = (PIMAGE_DOS_HEADER)tbase;
+            if (tdos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
+            PIMAGE_NT_HEADERS tnt = (PIMAGE_NT_HEADERS)(tbase + tdos->e_lfanew);
+            if (tnt->Signature != IMAGE_NT_SIGNATURE) return NULL;
+            DWORD texpRVA = tnt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+            DWORD texpSize = tnt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+            if (!texpRVA) return NULL;
+            PIMAGE_EXPORT_DIRECTORY tdir = (PIMAGE_EXPORT_DIRECTORY)(tbase + texpRVA);
+            DWORD* tfuncs = (DWORD*)(tbase + tdir->AddressOfFunctions);
+            DWORD idx = ordinal - tdir->Base;
+            if (idx >= tdir->NumberOfFunctions) return NULL;
+
+            DWORD funcRVA = tfuncs[idx];
+            if (funcRVA >= texpRVA && funcRVA < texpRVA + texpSize)
+                return ResolveForward((const char*)(tbase + funcRVA), useCrc);
+            return (FARPROC)(tbase + funcRVA);
+        }
+
+        // Named forward: resolve by hash
+        if (useCrc)
+            return GetProcByHashCrc(hTarget, Crc32C::RuntimeHash(fnName));
+        else
+            return GetProcByHash(hTarget, RuntimeHash(fnName));
+    }
+
     FARPROC GetProcByHash(HMODULE hModule, DWORD funcHash)
     {
         if (!hModule) return NULL;
@@ -81,6 +143,7 @@ namespace Api
         if (ntHeaders->Signature != IMAGE_NT_SIGNATURE) return NULL;
 
         DWORD exportRVA = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        DWORD exportSize = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
         if (exportRVA == 0) return NULL;
 
         PIMAGE_EXPORT_DIRECTORY exportDir = (PIMAGE_EXPORT_DIRECTORY)(base + exportRVA);
@@ -93,8 +156,10 @@ namespace Api
             const char* funcName = (const char*)(base + names[i]);
             if (RuntimeHash(funcName) == funcHash)
             {
-                WORD ord = ordinals[i];
-                return (FARPROC)(base + funcs[ord]);
+                DWORD funcRVA = funcs[ordinals[i]];
+                if (funcRVA >= exportRVA && funcRVA < exportRVA + exportSize)
+                    return ResolveForward((const char*)(base + funcRVA), false);
+                return (FARPROC)(base + funcRVA);
             }
         }
         return NULL;
@@ -172,6 +237,7 @@ namespace Api
         if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
 
         DWORD exportRVA = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        DWORD exportSize = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
         if (!exportRVA) return NULL;
 
         PIMAGE_EXPORT_DIRECTORY dir = (PIMAGE_EXPORT_DIRECTORY)(base + exportRVA);
@@ -183,7 +249,12 @@ namespace Api
         {
             const char* name = (const char*)(base + names[i]);
             if (Crc32C::RuntimeHash(name) == funcHash)
-                return (FARPROC)(base + funcs[ordinals[i]]);
+            {
+                DWORD funcRVA = funcs[ordinals[i]];
+                if (funcRVA >= exportRVA && funcRVA < exportRVA + exportSize)
+                    return ResolveForward((const char*)(base + funcRVA), true);
+                return (FARPROC)(base + funcRVA);
+            }
         }
         return NULL;
     }

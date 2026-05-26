@@ -24,6 +24,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Re-enable delayed expansion (vcvarsall.bat resets it via setlocal/endlocal)
+setlocal enabledelayedexpansion
+
 REM Create output directory
 if not exist "build\obj" mkdir build\obj
 if not exist "build\out" mkdir build\out

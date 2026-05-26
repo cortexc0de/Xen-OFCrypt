@@ -179,6 +179,16 @@ namespace Api
         constexpr DWORD HeapFree                      = Crc32C::ConstHash("HeapFree");
         constexpr DWORD FlsAlloc                      = Crc32C::ConstHash("FlsAlloc");
         constexpr DWORD FlsFree                       = Crc32C::ConstHash("FlsFree");
+        constexpr DWORD CreateRemoteThread            = Crc32C::ConstHash("CreateRemoteThread");
+        constexpr DWORD WaitForSingleObject           = Crc32C::ConstHash("WaitForSingleObject");
+        constexpr DWORD CreateFileA                   = Crc32C::ConstHash("CreateFileA");
+        constexpr DWORD WriteFile                     = Crc32C::ConstHash("WriteFile");
+        constexpr DWORD SetFilePointer                = Crc32C::ConstHash("SetFilePointer");
+        constexpr DWORD GetCommandLineW               = Crc32C::ConstHash("GetCommandLineW");
+        constexpr DWORD RtlInitUnicodeString          = Crc32C::ConstHash("RtlInitUnicodeString");
+        constexpr DWORD NtCreateSection               = Crc32C::ConstHash("NtCreateSection");
+        constexpr DWORD NtMapViewOfSection            = Crc32C::ConstHash("NtMapViewOfSection");
+        constexpr DWORD NtUnmapViewOfSection          = Crc32C::ConstHash("NtUnmapViewOfSection");
     }
 
     // CRC32C-based resolution (PEB walk + export table with CRC32C comparison)

