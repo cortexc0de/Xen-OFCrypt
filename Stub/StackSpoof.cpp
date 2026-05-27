@@ -198,9 +198,6 @@ namespace StackSpoof
 
     DWORD GadgetCount() { return s_Count; }
 
-    void* GetPoolData() { return s_Gadgets; }
-    DWORD GetPoolDataSize() { return s_Count * sizeof(SpoofGadget); }
-
     void* GetRetGadget() { return s_RetGadget; }
 
     // MASM SpoofCallWrapper declarations — one per non-volatile gadget register

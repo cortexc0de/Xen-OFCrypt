@@ -40,7 +40,4 @@ namespace GadgetPool
     // Get count of usable gadgets
     DWORD Count();
 
-    // Get pool data for XGADGT marker embedding by builder
-    void* GetPoolData();
-    DWORD GetPoolDataSize();
 }

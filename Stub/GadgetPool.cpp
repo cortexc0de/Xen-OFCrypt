@@ -94,7 +94,4 @@ namespace GadgetPool
     }
 
     DWORD Count() { return s_Count; }
-
-    void* GetPoolData() { return s_Gadgets; }
-    DWORD GetPoolDataSize() { return s_Count * sizeof(Gadget); }
 }

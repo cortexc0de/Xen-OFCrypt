@@ -73,9 +73,6 @@ namespace StackSpoof
     // Get count of available spoof gadgets
     DWORD GadgetCount();
 
-    // Get pool data for XSPOOF marker embedding by builder
-    void* GetPoolData();
-    DWORD GetPoolDataSize();
 
     // Get address of a C3 (ret) instruction in ntdll
     void* GetRetGadget();
