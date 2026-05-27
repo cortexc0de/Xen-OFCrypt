@@ -270,17 +270,23 @@ namespace Syscall
         }
 
         // ── Tier 2: Build hotpatch trampolines ──
-        // Only for entries that don't have a Tier 1 gadget
-        Hotpatch::ScanForHotpatchAreas();
-        for (int i = 0; i < ENTRY_COUNT; i++)
+        // Only when IndirectSyscalls is enabled (GadgetPool was scanned).
+        // Hotpatch overwrites Nt function prologues in ntdll, which
+        // corrupts them for WinAPI internal use (e.g. CreateProcessW).
+        // Skip when no gadgets — Tier 3 (direct syscall) is sufficient.
+        if (GadgetPool::Count() > 0)
         {
-            if (s_Entries[i].resolved && !s_Entries[i].gadgetAvailable)
+            Hotpatch::ScanForHotpatchAreas();
+            for (int i = 0; i < ENTRY_COUNT; i++)
             {
-                Hotpatch::Trampoline tramp = {};
-                if (Hotpatch::InstallTrampoline(s_Entries[i].ssn, &tramp))
+                if (s_Entries[i].resolved && !s_Entries[i].gadgetAvailable)
                 {
-                    s_Entries[i].hotpatchAddr = tramp.address;
-                    s_Entries[i].hotpatchAvailable = true;
+                    Hotpatch::Trampoline tramp = {};
+                    if (Hotpatch::InstallTrampoline(s_Entries[i].ssn, &tramp))
+                    {
+                        s_Entries[i].hotpatchAddr = tramp.address;
+                        s_Entries[i].hotpatchAvailable = true;
+                    }
                 }
             }
         }
