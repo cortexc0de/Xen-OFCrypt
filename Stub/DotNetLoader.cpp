@@ -292,7 +292,6 @@ namespace DotNetLoader
             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile == INVALID_HANDLE_VALUE) return false;
 
-        DWORD written = 0;
         // Записываем блоками (WriteFile ограничен ~32KB за вызов на некоторых системах)
         BYTE* ptr = (BYTE*)payload;
         size_t remaining = size;

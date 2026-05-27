@@ -183,7 +183,7 @@ namespace NeuroDecrypt
             return false;
 
         // Parse params — layout: [EnvHash(32)][TimeLockRounds(2)][Nonce(12)][Salt(16)] = 62
-        const unsigned char* expectedEnvHash = &neuroParams[0];
+        // EnvHash is validated implicitly: wrong machine → wrong envKey → ChaCha20 produces garbage
         unsigned short timeLockRounds = *(unsigned short*)&neuroParams[32];
         const unsigned char* nonce = &neuroParams[34];
         const unsigned char* salt  = &neuroParams[46];

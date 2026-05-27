@@ -77,16 +77,6 @@ namespace Syscall
         void*       address;
     };
 
-    // Comparator: sort Nt* exports by virtual address ascending
-    static int CompareByAddress(const void* a, const void* b)
-    {
-        const NtExportEntry* ea = (const NtExportEntry*)a;
-        const NtExportEntry* eb = (const NtExportEntry*)b;
-        if (ea->address < eb->address) return -1;
-        if (ea->address > eb->address) return  1;
-        return 0;
-    }
-
     // Method 3: FreshyCalls — collect all Nt* exports, sort by address,
     // the sorted position index equals the SSN.
     // Works even when every stub is hooked (no clean patterns available).
