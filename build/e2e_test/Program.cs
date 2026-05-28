@@ -89,7 +89,7 @@ byte[] rawShellcode = null;
 if (File.Exists(shellcodePath))
     rawShellcode = File.ReadAllBytes(shellcodePath);
 
-void RunShellcodeTest(string name, BuildConfig config, CipherType cipher)
+void RunShellcodeTest(string name, BuildConfig config, CipherType cipher, int extraWaitS = 0)
 {
     totalTests++;
     Console.Write($"  [{totalTests}] {name,-45} ");
@@ -115,8 +115,10 @@ void RunShellcodeTest(string name, BuildConfig config, CipherType cipher)
     var proc = Process.Start(new ProcessStartInfo(outputPath) { UseShellExecute = false });
     if (proc == null) { Console.WriteLine("LAUNCH FAIL"); failed++; return; }
 
+    // EkkoSleep adds ~8s delay before payload execution
+    int maxLoops = 8 + (extraWaitS / 2);
     bool found = false;
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < maxLoops; i++)
     {
         Thread.Sleep(2000);
         if (File.Exists(scMarkerPath))
@@ -226,6 +228,24 @@ RunShellcodeTest("Fibers + XOR + AntiDump",
 RunShellcodeTest("CallbackProxy + XOR + AntiDump",
     new BuildConfig { CallbackDiv = true, EncAlgorithm = 3, AntiDump = true },
     CipherType.XOR);
+
+// ═══════════════════════════════════════════════════════════
+//  Ekko Sleep Obfuscation Tests
+//  EkkoSleep encrypts all executable memory + heap during the
+//  initial delay (anti-sandbox sleep). Only works with long-lived
+//  execution modes (Fibers/CallbackProxy), not RunPE.
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── Ekko Sleep Obfuscation Tests ──\n");
+
+RunShellcodeTest("Fibers + XOR + EkkoSleep",
+    new BuildConfig { Fibers = true, EncAlgorithm = 3, EkkoSleep = true, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.XOR,
+    extraWaitS: 16);  // EkkoSleep = 8s jittered + 15s safety timeout + payload startup
+
+RunShellcodeTest("CallbackProxy + XOR + EkkoSleep",
+    new BuildConfig { CallbackDiv = true, EncAlgorithm = 3, EkkoSleep = true },
+    CipherType.XOR,
+    extraWaitS: 16);
 
 // ═══════════════════════════════════════════════════════════
 //  Summary

