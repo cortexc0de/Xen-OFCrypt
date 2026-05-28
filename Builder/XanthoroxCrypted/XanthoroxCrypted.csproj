@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Stub.exe" />
+    <EmbeddedResource Include="Stub.dll" />
   </ItemGroup>
 
 </Project>

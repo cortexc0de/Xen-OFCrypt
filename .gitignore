@@ -43,8 +43,9 @@ x86/
 
 # ── Executables (built, never committed) ──
 *.exe
-# Exception: Builder embeds this stub as a resource — must be tracked
+# Exception: Builder embeds these stubs as resources — must be tracked
 !Builder/XanthoroxCrypted/Stub.exe
+!Builder/XanthoroxCrypted/Stub.dll
 
 # ── Windows System Junk ──
 Thumbs.db

