@@ -1,13 +1,20 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
+
+    <!-- Self-contained single-file publish -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibsForSelfExtract>true</IncludeNativeLibsForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
 
     <!-- Branding -->
     <Product>Xanthorox-OFCrypt</Product>
@@ -17,5 +24,11 @@
     <Version>3.0.0</Version>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Stub.exe" />
+    <EmbeddedResource Include="Stub.dll" />
+    <EmbeddedResource Include="Assets\ClrHost.dll" />
+  </ItemGroup>
 
 </Project>

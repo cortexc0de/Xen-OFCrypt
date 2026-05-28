@@ -1,0 +1,18 @@
+<type>(<scope>): <short summary>
+  │       │             │
+  │       │             └─⫸ Summary in present tense. Not capitalized. No period at the end
+  │       │
+  │       └─⫸ Commit Scope: stub|builder|docs|tests|infra
+  │
+  └─⫸ Commit Type: feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert
+
+# Example: feat(stub): add knowndlls unhooking via section mapping
+# Example: fix(builder): resolve stubconfig v2 patching offset mismatch
+# Example: docs: update roadmap with POC phase results
+
+# --- COMMIT MESSAGE TEMPLATE ---
+# 1. Type and Scope are required if not a simple chore.
+# 2. Keep the summary under 50 characters.
+# 3. Leave a blank line after the summary.
+# 4. Provide a detailed description in the body (optional).
+# 5. Reference issues or PRs at the bottom (e.g., "Fixes #123").

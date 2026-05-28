@@ -18,4 +18,10 @@ namespace Phantom
     // The payload runs from within a legitimately signed module's address space.
     // No admin needed — LoadLibrary + VirtualProtect on own process.
     void Execute(void* payload, size_t size);
+
+    // Unlink a DLL from all 3 PEB LDR lists (InLoad, InMemory, InInitialization).
+    // After unlinking, the module is invisible to EnumProcessModules and
+    // CreateToolhelp32Snapshot. Also zeroes UNICODE_STRINGs and poisons DllBase.
+    // Used by AntiDump (Layer 2) to make our stub module invisible.
+    void UnlinkFromPeb(HMODULE hModule);
 }

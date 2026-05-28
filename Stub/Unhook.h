@@ -11,6 +11,9 @@
 #pragma once
 #include <windows.h>
 
+// Forward declaration for KnownDlls unhooking (see KnownDlls.h)
+namespace KnownDlls { bool UnhookNtdll(); bool MiniUnhookForTls(); }
+
 // ═══════════════════════════════════════════════════════════════
 //  NTDLL UNHOOKING — Remap clean ntdll from disk
 //  Removes all EDR/AV userland hooks before sensitive operations.

