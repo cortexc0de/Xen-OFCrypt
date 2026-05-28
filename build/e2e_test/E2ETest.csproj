@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="ManualTest.cs" />
+    <Compile Remove="dotnet_payload\**" />
+    <None Remove="dotnet_payload\**" />
     <ProjectReference Include="..\..\Builder\XanthoroxCrypted\XanthoroxCrypted.csproj" />
   </ItemGroup>
 </Project>

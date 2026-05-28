@@ -28,6 +28,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Stub.exe" />
     <EmbeddedResource Include="Stub.dll" />
+    <EmbeddedResource Include="Assets\ClrHost.dll" />
   </ItemGroup>
 
 </Project>

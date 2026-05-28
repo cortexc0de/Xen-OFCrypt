@@ -34,9 +34,10 @@ namespace DotNetLoader
 
     // Основная функция: загрузить и выполнить .NET assembly
     // Использует Method A: temp file + ExecuteInDefaultAppDomain
-    bool LoadAndExecute(void* payload, size_t size);
+    // Returns: .NET method return value on success, or -1 on failure
+    int LoadAndExecute(void* payload, size_t size);
 
     // С явным указанием класса/метода (для нестандартных assembly)
-    bool LoadAndExecute(void* payload, size_t size,
+    int LoadAndExecute(void* payload, size_t size,
         const wchar_t* className, const wchar_t* methodName);
 }

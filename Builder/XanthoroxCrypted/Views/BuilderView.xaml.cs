@@ -101,6 +101,7 @@ namespace XanthoroxCrypted.Views
             ChkHWIDBind.IsChecked = state;
             ChkPhantomDLL.IsChecked = state;
             ChkCallbackDiv.IsChecked = state;
+            ChkRemoteInjection.IsChecked = false; // Off by default — requires target process
             // New L21-L40 toggles
             ChkMotwStrip.IsChecked = state;
             ChkAntiEmulation.IsChecked = state;
@@ -227,6 +228,8 @@ namespace XanthoroxCrypted.Views
                         config.HWIDBind    = ChkHWIDBind.IsChecked == true;
                         config.PhantomDLL  = ChkPhantomDLL.IsChecked == true;
                         config.CallbackDiv = ChkCallbackDiv.IsChecked == true;
+                        config.RemoteInjection = ChkRemoteInjection.IsChecked == true;
+                        config.InjectionMethod = (byte)(CmbInjectionMethod?.SelectedIndex ?? 0);
                         // L21-L40 toggles
                         config.MotwStrip      = ChkMotwStrip.IsChecked == true;
                         config.AntiEmulation  = ChkAntiEmulation.IsChecked == true;
@@ -260,6 +263,8 @@ namespace XanthoroxCrypted.Views
                             ChkPhantomDLL.IsChecked  = config.PhantomDLL;
                             ChkThreadPool.IsChecked  = config.ThreadPool;
                             ChkCallbackDiv.IsChecked = config.CallbackDiv;
+                            ChkRemoteInjection.IsChecked = config.RemoteInjection;
+                            if (CmbInjectionMethod != null) CmbInjectionMethod.SelectedIndex = config.InjectionMethod;
                             ChkPersist.IsChecked     = config.Persist;
                             ChkMelt.IsChecked        = config.Melt;
                         });
@@ -370,6 +375,8 @@ namespace XanthoroxCrypted.Views
             ChkHWIDBind.IsChecked    = config.HWIDBind;
             ChkPhantomDLL.IsChecked  = config.PhantomDLL;
             ChkCallbackDiv.IsChecked = config.CallbackDiv;
+            ChkRemoteInjection.IsChecked = config.RemoteInjection;
+            if (CmbInjectionMethod != null) CmbInjectionMethod.SelectedIndex = config.InjectionMethod;
 
             // New L21-L40 toggles
             ChkMotwStrip.IsChecked     = config.MotwStrip;

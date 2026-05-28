@@ -172,6 +172,7 @@ namespace Api
         constexpr DWORD EnumChildWindows             = Crc32C::ConstHash("EnumChildWindows");
         constexpr DWORD CLRCreateInstance            = Crc32C::ConstHash("CLRCreateInstance");
         constexpr DWORD CoInitialize                 = Crc32C::ConstHash("CoInitialize");
+        constexpr DWORD CoInitializeEx               = Crc32C::ConstHash("CoInitializeEx");
         constexpr DWORD CoUninitialize               = Crc32C::ConstHash("CoUninitialize");
         constexpr DWORD AddVectoredExceptionHandler   = Crc32C::ConstHash("AddVectoredExceptionHandler");
         constexpr DWORD RemoveVectoredExceptionHandler = Crc32C::ConstHash("RemoveVectoredExceptionHandler");
@@ -180,6 +181,7 @@ namespace Api
         constexpr DWORD FlsAlloc                      = Crc32C::ConstHash("FlsAlloc");
         constexpr DWORD FlsFree                       = Crc32C::ConstHash("FlsFree");
         constexpr DWORD CreateRemoteThread            = Crc32C::ConstHash("CreateRemoteThread");
+        constexpr DWORD CreateThread                  = Crc32C::ConstHash("CreateThread");
         constexpr DWORD WaitForSingleObject           = Crc32C::ConstHash("WaitForSingleObject");
         constexpr DWORD CreateFileA                   = Crc32C::ConstHash("CreateFileA");
         constexpr DWORD WriteFile                     = Crc32C::ConstHash("WriteFile");
