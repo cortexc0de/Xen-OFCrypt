@@ -76,7 +76,7 @@ namespace Phantom
     //    DllBase                    at struct offset +0x30  →  curr + 0x20
     //    FullDllName                at struct offset +0x48  →  curr + 0x38
     //    BaseDllName                at struct offset +0x58  →  curr + 0x48
-    static void UnlinkFromPeb(HMODULE hModule)
+    void UnlinkFromPeb(HMODULE hModule)
     {
         // PEB via GS:[0x60] on x64
         unsigned __int64 pebAddr = __readgsqword(0x60);

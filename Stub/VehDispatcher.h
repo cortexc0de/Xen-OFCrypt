@@ -22,6 +22,7 @@
 //  диспетчеризация по ExceptionCode:
 //    STATUS_SINGLE_STEP          → PatchlessBypass::HandleSingleStep
 //    STATUS_GUARD_PAGE_VIOLATION → GuardPage::HandleGuardPage
+//                                    → AntiDump::HandleGuardPage (cascade)
 //
 //  Каждый модуль возвращает EXCEPTION_CONTINUE_SEARCH если
 //  исключение не его, либо EXCEPTION_CONTINUE_EXECUTION если

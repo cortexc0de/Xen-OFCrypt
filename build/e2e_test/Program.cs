@@ -210,6 +210,23 @@ RunTest("RunPE + XOR + KnownDllsUnhook",
     new BuildConfig { RunPE = true, EncAlgorithm = 3, KnownDllsUnhook = true, IndirectSyscalls = true },
     CipherType.XOR);
 
+RunTest("RunPE + XOR + AntiDump",
+    new BuildConfig { RunPE = true, EncAlgorithm = 3, AntiDump = true, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.XOR);
+
+// ═══════════════════════════════════════════════════════════
+//  Long-Lived AntiDump Tests (all 4 layers active)
+// ═══════════════════════════════════════════════════════════
+Console.WriteLine("\n── Long-Lived AntiDump Tests ──\n");
+
+RunShellcodeTest("Fibers + XOR + AntiDump",
+    new BuildConfig { Fibers = true, EncAlgorithm = 3, AntiDump = true, IndirectSyscalls = true, StackSpoof = true },
+    CipherType.XOR);
+
+RunShellcodeTest("CallbackProxy + XOR + AntiDump",
+    new BuildConfig { CallbackDiv = true, EncAlgorithm = 3, AntiDump = true },
+    CipherType.XOR);
+
 // ═══════════════════════════════════════════════════════════
 //  Summary
 // ═══════════════════════════════════════════════════════════
